@@ -20,6 +20,12 @@ AXIS 是一个用 Rust 编写的宏内核，稳定、直接、忠实地执行每
 
 - 完整的类 Unix 宏内核架构
 - 模块化、可维护的代码结构
+- 采用 Linux 定义的通用系统调用 ABI 和语义
+- 不涉及平台特定的寄存器映射由 `arch/` 层完全处理
+- 后期将支持 musl 动态链接的程序运行，为此：
+   - 须实现 fork, execve, exit, read, write, mmap 等核心系统调用
+   - 须正确处理 errno（内核返回负错误码，libc 转换为 errno）
+   - 须采用标准的程序加载格式：ELF，正确的 argv/envp/auxv 栈布局
 
 ### 架构设计
 

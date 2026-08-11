@@ -37,7 +37,7 @@ AXIS/
 │   ├── Cargo.lock
 │   ├── build.rs                                # 构建脚本 (交叉编译配置)
 │   ├── kernel.ld                               # 内核链接脚本 (内存布局定义)
-│   ├── x86_64-unknown-axis.json                # 自定义 target 定义 (x86_64 编译目标)
+│   ├── x86_64-unknown-axis.json                # 自定义 target 定义 (x86-64 编译目标)
 │   │
 │   └── src/
 │       ├── main.rs                             # 内核主函数入口
@@ -53,7 +53,9 @@ AXIS/
 │       │       ├── cpu.rs                      # CPU 特性检测和启用
 │       │       ├── gdt.rs                      # GDT (全局描述符表) 设置
 │       │       ├── idt.rs                      # IDT (中断描述符表) 设置
+│       │       ├── memory.rs                   # 内存管理常量和工具函数
 │       │       ├── paging.rs                   # 分页机制初始化
+│       │       ├── vdso.rs                     # VDSO (虚拟动态共享对象) 快速路径实现
 │       │       │
 │       │       ├── interrupt/                  # 中断和异常处理
 │       │       │   ├── mod.rs
@@ -96,7 +98,6 @@ AXIS/
 │       │   │   ├── layout.rs                   # 虚拟地址空间布局
 │       │   │   ├── vma.rs                      # VMA (虚拟内存区域) 描述符
 │       │   │   ├── cow.rs                      # COW (写时复制) 机制
-│       │   │   ├── hugetlb.rs                  # 大页面支持 (2MB、1GB)
 │       │   │   └── swap.rs                     # 交换机制 (内存溢出到磁盘)
 │       │   │
 │       │   ├── heap.rs                         # 动态内存堆分配
@@ -232,20 +233,10 @@ AXIS/
 │       │   ├── net.rs                          # 网络相关系统调用 (socket、connect、send)
 │       │   ├── time.rs                         # 时间相关系统调用 (gettimeofday、nanosleep)
 │       │   ├── io_uring.rs                     # io_uring 异步 I/O 系统调用
-│       │   ├── ebpf.rs                         # eBPF 加载和管理系统调用
 │       │   ├── cgroup.rs                       # cgroup 相关系统调用
 │       │   ├── namespace.rs                    # 命名空间相关系统调用 (unshare、setns)
 │       │   ├── perf.rs                         # 性能计数相关系统调用
 │       │   └── misc.rs                         # 其他杂项系统调用
-│       │
-│       ├── ebpf/                               # eBPF (扩展的伯克利包过滤器) 虚拟机
-│       │   ├── mod.rs
-│       │   ├── verifier.rs                     # eBPF 字节码验证器 (安全性检查)
-│       │   ├── vm.rs                           # eBPF 虚拟机执行引擎
-│       │   ├── jit.rs                          # JIT 编译器 (字节码到本地代码)
-│       │   ├── maps.rs                         # eBPF Map 数据结构 (用户态/内核态通信)
-│       │   ├── helpers.rs                      # eBPF 辅助函数 (内核接口)
-│       │   └── prog.rs                         # eBPF 程序管理 (加载、附加、执行)
 │       │
 │       ├── lib/                                # 通用库函数和工具
 │       │   ├── mod.rs
@@ -993,6 +984,203 @@ context_switch:
 
 ---
 
+#### arch/x86_64/memory.rs
+
+用途: x86-64 平台内存管理常量和工具函数
+
+实现思路:
+- 定义 x86-64 特定的内存布局常量
+- 提供地址转换和验证工具
+- 由 `mm/vmm.rs` 通用层导入使用
+
+代码:
+```rust
+// 页大小和相关常量
+pub const PAGE_SIZE: usize = 4096;
+pub const PAGE_SHIFT: usize = 12;
+pub const PAGE_MASK: u64 = 0xFFF;
+pub const PAGE_ADDR_MASK: u64 = !0xFFF;
+
+// 大页和巨页
+pub const LARGE_PAGE_SIZE: usize = 0x200_000;     // 2MB
+pub const LARGE_PAGE_SHIFT: usize = 21;
+pub const HUGE_PAGE_SIZE: usize = 0x4000_0000;    // 1GB
+pub const HUGE_PAGE_SHIFT: usize = 30;
+
+// 虚拟地址空间布局 (x86-64 canonical form)
+pub const KERNEL_BASE: u64 = 0xFFFF_8000_0000_0000;
+pub const KERNEL_END: u64 = 0xFFFF_FFFF_FFFF_FFFF;
+pub const USER_BASE: u64 = 0x0000_0000_0000_0000;
+pub const USER_END: u64 = 0x0000_7FFF_FFFF_FFFF;
+
+// 内核空间预留区域
+pub const KERNEL_HEAP_BASE: u64 = 0xFFFF_FF00_0000_0000;
+pub const KERNEL_HEAP_END: u64 = 0xFFFF_FF80_0000_0000;
+pub const KERNEL_STACK_BASE: u64 = 0xFFFF_FE00_0000_0000;
+
+// 用户空间区域
+pub const USER_HEAP_MAX: u64 = 0x0000_5555_5555_5000;   // brk() 上限
+pub const USER_STACK_BASE: u64 = 0x0000_7FFF_FFFF_F000; // 向下增长
+
+pub fn is_user_address(addr: u64) -> bool {
+    USER_BASE <= addr && addr <= USER_END
+}
+
+pub fn is_kernel_address(addr: u64) -> bool {
+    addr >= KERNEL_BASE
+}
+
+pub fn is_canonical(addr: u64) -> bool {
+    is_user_address(addr) || is_kernel_address(addr)
+}
+```
+
+---
+
+#### arch/x86_64/interrupt/handler.rs
+
+用途: x86-64 系统调用异常处理（与通用层 syscall/dispatch.rs 分离）
+
+实现思路:
+- 处理 syscall 指令触发的异常
+- 将 x86-64 寄存器映射到通用参数
+- 调用通用的系统调用分发器
+- 处理异常栈帧和返回
+
+代码补充:
+```rust
+// 在 arch/x86_64/interrupt/handler.rs 中添加
+pub extern "x86-interrupt" fn syscall_handler(frame: &mut ExceptionFrame) {
+    // x86-64 syscall 指令约定：
+    // 系统调用号在 rax，参数在 rdi, rsi, rdx, r10, r8, r9
+    let number = frame.rax as usize;
+    let arg0 = frame.rdi;
+    let arg1 = frame.rsi;
+    let arg2 = frame.rdx;
+    let arg3 = frame.r10;
+    let arg4 = frame.r8;
+    let arg5 = frame.r9;
+
+    // 调用通用分发器（位于 syscall/dispatch.rs）
+    let result = syscall_dispatch(number, arg0, arg1, arg2, arg3, arg4, arg5);
+    
+    // 返回值放入 rax
+    frame.rax = result as u64;
+}
+```
+
+---
+
+#### arch/x86_64/vdso.rs
+
+用途: VDSO（Virtual Dynamic Shared Object）快速路径实现
+
+实现思路:
+- 内核在用户空间映射只读 VDSO 页面
+- 提供高频系统调用的无上下文切换实现
+- 在 ELF 加载时通过 auxv 通知 libc VDSO 地址
+- 使用 RDTSC、HPET 或内核维护的时间戳
+
+设计要点:
+- **VDSO 映射**：在进程虚拟地址空间中固定位置（如 0xffffffffff600000）
+- **时间戳更新**：内核定时器中断更新 VDSO 的时钟信息
+- **后备系统调用**：若 VDSO 数据过期或不可用，调用真实系统调用
+- **Linux 兼容**：采用与 Linux 相同的 VDSO 接口和符号
+
+实现框架:
+```rust
+// VDSO 符号定义
+#[repr(C)]
+pub struct VdsoData {
+    pub seq: u64,                    // 序列号，用于无锁同步
+    pub tv_sec: i64,                 // 秒
+    pub tv_nsec: u64,                // 纳秒
+    pub clock_tsc_cycles: u64,       // TSC 周期
+    pub clock_tsc_khz: u32,          // TSC 频率
+    pub cpu_id: u32,                 // CPU ID
+}
+
+// VDSO 内部汇编函数（会被 libc 调用）
+global __vdso_gettimeofday
+__vdso_gettimeofday:
+    ; rdi = struct timeval *tv
+    ; rsi = struct timezone *tz（已废弃，忽略）
+    ; 从 VDSO 数据区读取时间
+    mov rax, qword [vdso_data]    ; 获取 VdsoData 地址
+    ; ... 转换并填充 timeval 结构
+    ret
+
+global __vdso_clock_gettime
+__vdso_clock_gettime:
+    ; rdi = clockid_t which_clock
+    ; rsi = struct timespec *ts
+    ; 根据 clock id 返回对应的时间
+    cmp rdi, CLOCK_REALTIME
+    je .realtime
+    cmp rdi, CLOCK_MONOTONIC
+    je .monotonic
+    ; ... 其他 clock id
+.realtime:
+    mov rax, qword [vdso_data]
+    ; ... 填充 timespec 结构
+    ret
+
+global __vdso_getcpu
+__vdso_getcpu:
+    ; rdi = unsigned *cpu
+    ; rsi = unsigned *node（可选）
+    ; rdx = void *tcache（cache 指针，可选）
+    mov rax, qword [vdso_data + CPU_ID_OFFSET]
+    mov [rdi], eax
+    ret
+```
+
+**VDSO 初始化** 在进程加载时：
+```rust
+pub fn setup_vdso(process: &mut ProcessControlBlock) {
+    // 1. 分配物理页（驻留内存）
+    let vdso_paddr = PMM.alloc(0)?;
+    
+    // 2. 在用户地址空间映射（只读）
+    let vdso_vaddr = 0xffffffffff600000u64;
+    process.page_table.map(vdso_vaddr, vdso_paddr, PAGE_RO | PAGE_USER)?;
+    
+    // 3. 初始化 VDSO 数据
+    let vdso_data = VdsoData {
+        seq: 0,
+        tv_sec: current_timestamp() / 1_000_000_000,
+        tv_nsec: current_timestamp() % 1_000_000_000,
+        // ...
+    };
+    unsafe {
+        *(vdso_paddr as *mut VdsoData) = vdso_data;
+    }
+    
+    // 4. 在 auxv 中记录 VDSO 地址
+    process.auxv.push((AT_SYSINFO_EHDR, vdso_vaddr));
+}
+```
+
+**VDSO 更新** 在定时器中断中：
+```rust
+pub fn update_vdso_timestamp() {
+    // 在每个时钟滴答时调用
+    for process in TASK_MANAGER.all_processes() {
+        if let Ok(vdso_ptr) = process.get_vdso_data() {
+            unsafe {
+                let data = &mut *vdso_ptr;
+                data.seq += 1;  // 递增序列号（开始更新）
+                data.tv_sec = current_timestamp() / 1_000_000_000;
+                data.tv_nsec = current_timestamp() % 1_000_000_000;
+                data.seq += 1;  // 递增序列号（完成更新）
+            }
+        }
+    }
+}
+```
+
+---
+
 ### 3. Synchronization (sync/)
 
 #### sync/spinlock.rs
@@ -1308,44 +1496,51 @@ impl BuddyAllocator {
 ---
 #### mm/vmm.rs
 
-用途: 虚拟内存管理（页表操作和地址映射）
+用途: 虚拟内存管理（页表操作和地址映射）- 通用接口
 
 实现思路:
-- 管理四级页表（x86-64 的 PML4/PDPT/PD/PT）
-- 维护虚拟地址空间布局（kernel space, user space）
-- 支持大页（2MB, 1GB）
-- 支持写时复制（COW）和按需分页（demand paging）
+- 定义虚拟内存管理的通用接口（不涉及具体页表结构）
+- 维护虚拟地址空间布局、VMA（虚拟内存区域）、地址映射关系
+- 支持大页、写时复制（COW）和按需分页（demand paging）
+- **平台特定部分**（四级页表、PML4/PDPT/PD/PT 等）应由 `arch/x86_64/mmu.rs` 或 `arch/x86_64/memory.rs` 实现
 
-实现方法:
+通用接口定义:
+pub trait PageTableOps {
+    unsafe fn translate(&self, vaddr: u64) -> Option<u64>;
+    unsafe fn map(&mut self, vaddr: u64, paddr: u64, flags: u64) -> Result<()>;
+    unsafe fn unmap(&mut self, vaddr: u64) -> Result<()>;
+}
+
+pub struct VirtualMemoryManager {
+    page_table: Arc<dyn PageTableOps>,
+    vma_list: BTreeMap<u64, VirtualMemoryArea>,
+    // ... 地址空间布局由 arch 层通过 ARCH_CONFIG 提供
+}
+
+**x86-64 特定实现** 应在 `arch/x86_64/memory.rs` 中定义：
+```rust
+pub const PAGE_SIZE: usize = 4096;
+pub const PAGE_SHIFT: usize = 12;
 pub const KERNEL_BASE: u64 = 0xFFFF_8000_0000_0000;
 pub const USER_BASE: u64 = 0x0000_0000_0000_0000;
+pub const KERNEL_END: u64 = 0xFFFF_FFFF_FFFF_FFFF;
+pub const LARGE_PAGE_SIZE: usize = 0x200_000;      // 2MB
+pub const HUGE_PAGE_SIZE: usize = 0x4000_0000;     // 1GB
+```
 
-pub struct PageTable {
-    pml4: *mut [PtEntry; 512],
+实现示例（x86-64 特定）:
+```rust
+pub struct X86_64PageTable {
+    pml4: *mut [PtEntry; 512],  // 四级页表根
 }
 
-pub struct PtEntry(u64);
-
-impl PtEntry {
-    pub fn present(&self) -> bool { (self.0 & 1) != 0 }
-    pub fn writable(&self) -> bool { (self.0 & 2) != 0 }
-    pub fn user(&self) -> bool { (self.0 & 4) != 0 }
-    pub fn address(&self) -> u64 { self.0 & 0x000F_FFFF_FFFF_F000 }
-    pub fn set_address(&mut self, addr: u64) {
-        self.0 = (self.0 & 0xFFF) | (addr & 0x000F_FFFF_FFFF_F000);
-    }
-    pub fn set_flags(&mut self, flags: u64) {
-        self.0 = (self.0 & 0x000F_FFFF_FFFF_F000) | (flags & 0xFFF);
-    }
-}
-
-impl PageTable {
+impl PageTableOps for X86_64PageTable {
     pub unsafe fn translate(&self, vaddr: u64) -> Option<u64> {
         let indexes = [
-            (vaddr >> 39) & 0x1FF,
-            (vaddr >> 30) & 0x1FF,
-            (vaddr >> 21) & 0x1FF,
-            (vaddr >> 12) & 0x1FF,
+            (vaddr >> 39) & 0x1FF,  // PML4 索引
+            (vaddr >> 30) & 0x1FF,  // PDPT 索引
+            (vaddr >> 21) & 0x1FF,  // PD 索引
+            (vaddr >> 12) & 0x1FF,  // PT 索引
         ];
 
         let mut table = self.pml4;
@@ -1380,6 +1575,7 @@ impl PageTable {
         // ... 页表清除逻辑
     }
 }
+```
 
 ---
 #### mm/heap.rs 和 mm/slub.rs
@@ -2289,14 +2485,16 @@ impl BlockDevice for NvmeController {
 
 #### syscall/dispatch.rs
 
-用途: 系统调用分发器
+用途: 系统调用分发器（通用层，不涉及平台特定细节）
 
 实现思路:
 - 中央分发点，根据系统调用号路由到相应处理器
+- 定义 Linux 标准的系统调用号和 ABI
 - 统计系统调用使用情况（用于 eBPF 跟踪）
 - 处理权限检查和审计
+- **平台特定部分**（寄存器映射）由 `arch/x86_64/interrupt/handler.rs` 处理
 
-代码:
+代码（通用层）:
 pub const SYS_READ: usize = 0;
 pub const SYS_WRITE: usize = 1;
 pub const SYS_OPEN: usize = 2;
@@ -2305,9 +2503,11 @@ pub const SYS_FORK: usize = 57;
 pub const SYS_EXECVE: usize = 59;
 pub const SYS_EXIT: usize = 60;
 pub const SYS_WAIT4: usize = 114;
+pub const SYS_CLOCK_GETTIME: usize = 228;
 pub const SYS_IO_URING_SETUP: usize = 425;
 // ... 更多系统调用号
 
+// 通用分发函数，接收已映射的参数（不知道 x86-64 寄存器）
 pub fn syscall_dispatch(
     number: usize,
     arg0: u64,
@@ -2317,9 +2517,6 @@ pub fn syscall_dispatch(
     arg4: u64,
     arg5: u64,
 ) -> i64 {
-    // 审计和跟踪（eBPF 钩子）
-    TRACE.record_syscall(number, &[arg0, arg1, arg2, arg3, arg4, arg5]);
-
     let result = match number {
         SYS_READ => sys_read(arg0 as i32, arg1 as *mut u8, arg2) as i64,
         SYS_WRITE => sys_write(arg0 as i32, arg1 as *const u8, arg2) as i64,
@@ -2328,15 +2525,20 @@ pub fn syscall_dispatch(
         SYS_FORK => sys_fork() as i64,
         SYS_EXECVE => sys_execve(arg0 as *const u8, arg1 as *const *const u8) as i64,
         SYS_EXIT => sys_exit(arg0 as i32),
+        SYS_CLOCK_GETTIME => sys_clock_gettime(arg0, arg1 as *mut TimeSpec) as i64,
         SYS_IO_URING_SETUP => sys_io_uring_setup(arg0 as u32) as i64,
         _ => -ENOSYS as i64,
     };
 
-result
+    result
 }
 
+**x86-64 特定实现** 应在 `arch/x86_64/interrupt/handler.rs` 中：
+```rust
+// x86-64 中断处理，将寄存器映射到通用参数
 pub extern "x86-interrupt" fn syscall_handler(frame: &mut ExceptionFrame) {
-    // x86-64 syscall 指令将系统调用号放在 rax，参数放在 rdi, rsi, rdx, r10, r8, r9
+    // x86-64 syscall 指令约定：
+    // 系统调用号在 rax，参数在 rdi, rsi, rdx, r10, r8, r9
     let number = frame.rax as usize;
     let arg0 = frame.rdi;
     let arg1 = frame.rsi;
@@ -2345,9 +2547,13 @@ pub extern "x86-interrupt" fn syscall_handler(frame: &mut ExceptionFrame) {
     let arg4 = frame.r8;
     let arg5 = frame.r9;
 
-let result = syscall_dispatch(number, arg0, arg1, arg2, arg3, arg4, arg5);
-frame.rax = result as u64;
+    // 调用通用分发器（位于 syscall/dispatch.rs）
+    let result = syscall_dispatch(number, arg0, arg1, arg2, arg3, arg4, arg5);
+    
+    // 返回值放入 rax
+    frame.rax = result as u64;
 }
+```
 
 ---
 
@@ -2415,205 +2621,7 @@ pub fn sys_io_uring_register(fd: i32, opcode: u32, arg: u64, nr_args: u32) -> Re
 
 ---
 
-### 10. eBPF Subsystem (ebpf/)
-
-#### ebpf/verifier.rs
-
-用途: eBPF 字节码验证器
-
-实现思路:
-- 验证 eBPF 程序不会导致内核崩溃
-- 检查内存访问合法性
-- 检查寄存器有效性
-- 静态分析控制流
-
-代码框架:
-pub struct BpfVerifier {
-    insns: Vec<BpfInsn>,
-    states: Vec<RegisterState>,
-}
-
-#[derive(Clone)]
-pub struct RegisterState {
-    registers: [RegisterValue; 11],  // R0-R10
-    stack_depth: u32,
-}
-
-pub enum RegisterValue {
-    Unknown,
-    Constant(i64),
-    StackOffset(u32),
-    MapValue,
-    KernelPointer,
-    UserPointer,
-}
-
-impl BpfVerifier {
-    pub fn verify(&mut self) -> Result<()> {
-        for (i, insn) in self.insns.iter().enumerate() {
-            self.verify_instruction(i, insn)?;
-        }
-        Ok(())
-    }
-
-    fn verify_instruction(&mut self, pc: usize, insn: &BpfInsn) -> Result<()> {
-        let mut state = self.states[pc].clone();
-
-        match insn.code {
-            BPF_LD => {
-                // Load 指令
-                let dst = insn.dst_reg as usize;
-                state.registers[dst] = self.resolve_load_value(insn)?;
-            }
-            BPF_ST => {
-                // Store 指令 - 检查内存访问合法性
-                self.verify_memory_access(&state, insn)?;
-            }
-            BPF_ALU => {
-                // 算术操作
-                self.verify_alu_operation(&state, insn)?;
-            }
-            BPF_JMP => {
-                // 分支 - 检查跳转目标有效
-                let target_pc = (pc as i32 + insn.off as i32) as usize;
-                if target_pc >= self.insns.len() {
-                    return Err(Error::InvalidBranch);
-                }
-            }
-            _ => {}
-        }
-
-        self.states[pc + 1] = state;
-        Ok(())
-    }
-
-    fn verify_memory_access(&self, state: &RegisterState, insn: &BpfInsn) -> Result<()> {
-        let reg_val = &state.registers[insn.src_reg as usize];
-
-        match reg_val {
-            RegisterValue::StackOffset(offset) => {
-                // 栈访问总是安全的（在栈范围内）
-                if *offset > MAX_BPF_STACK {
-                    return Err(Error::StackOutOfBounds);
-                }
-                Ok(())
-            }
-            RegisterValue::MapValue => {
-                // Map 值访问是安全的
-                Ok(())
-            }
-            RegisterValue::UserPointer => {
-                // 用户指针需要使用 bpf_probe_read
-                return Err(Error::UnsafeMemoryAccess);
-            }
-            RegisterValue::KernelPointer => {
-                // 内核指针也不能直接访问
-                return Err(Error::UnsafeMemoryAccess);
-            }
-            _ => Ok(()),
-        }
-    }
-}
-
----
-#### ebpf/prog.rs
-
-用途: eBPF 程序管理和执行
-
-实现思路:
-- 加载 eBPF 程序到内核
-- 注册程序到事件钩子（syscall, kprobe, tracepoint 等）
-- 管理程序生命周期
-
-代码:
-pub enum BpfProgramType {
-    Syscall,
-    Kprobe,
-    Kretprobe,
-    Tracepoint,
-    PerfEvent,
-    Xdp,        // eXpress Data Path（网络包处理）
-    SockFilter,
-    SocketOps,
-}
-
-pub struct BpfProgram {
-    id: u32,
-    program_type: BpfProgramType,
-    bytecode: Vec<BpfInsn>,
-    jitted_code: Option<Vec<u8>>,
-    maps: Vec<Arc<BpfMap>>,
-    refcnt: Arc<AtomicU32>,
-}
-
-impl BpfProgram {
-    pub fn load(
-        program_type: BpfProgramType,
-        bytecode: &[u8],
-        license: &str,
-    ) -> Result<Arc<Self>> {
-        // 1. 验证 eBPF 字节码
-        let mut verifier = BpfVerifier::new(bytecode)?;
-        verifier.verify()?;
-
-        // 2. JIT 编译成本地代码
-        let jitted = if JIT_ENABLED {
-            Some(BpfJit::compile(bytecode)?)
-        } else {
-            None
-        };
-
-        let prog = Arc::new(BpfProgram {
-            id: allocate_prog_id(),
-            program_type,
-            bytecode: parse_instructions(bytecode),
-            jitted_code: jitted,
-            maps: Vec::new(),
-            refcnt: Arc::new(AtomicU32::new(1)),
-        });
-
-        Ok(prog)
-    }
-
-    pub fn attach(&self, target: BpfAttachPoint) -> Result<()> {
-        match target {
-            BpfAttachPoint::Syscall(syscall_num) => {
-                SYSCALL_HOOKS[syscall_num].attach(self);
-            }
-            BpfAttachPoint::Kprobe(symbol) => {
-                KPROBE_HOOKS.insert(symbol, Arc::clone(self));
-            }
-            BpfAttachPoint::Xdp(iface) => {
-                if let Some(nic) = NET_DRIVER.get_interface(iface)? {
-                    nic.attach_xdp_prog(Arc::clone(self))?;
-                }
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-}
-
-pub struct BpfMap {
-    id: u32,
-    key_size: u32,
-    value_size: u32,
-    max_entries: u32,
-    map_type: BpfMapType,
-    data: Spinlock<HashMap<Vec<u8>, Vec<u8>>>,
-}
-
-pub enum BpfMapType {
-    Hash,
-    Array,
-    ProgArray,
-    PerCpuArray,
-    RingBuffer,
-}
-
----
-
-### 11. Library Functions (lib/)
+### 10. Library Functions (lib/)
 
 #### lib/collections/lockfree/
 
