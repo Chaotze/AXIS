@@ -1,6 +1,6 @@
 # AXIS 架构设计文档
 
-[项目结构](#项目结构) | [模块详解](#模块详解)
+[项目结构](#项目结构) | [部分模块详解](#部分模块详解)
 
 <br>
 
@@ -9,291 +9,291 @@
 ## 项目结构
 
 AXIS/
-├── bootloader/
-│   ├── bios/
+├── bootloader/                                 # 引导加载程序 (固件和内核之间的桥梁)
+│   ├── bios/                                   # BIOS 传统引导模式
 │   │   ├── Cargo.toml
 │   │   ├── Cargo.lock
-│   │   ├── stage1.asm
-│   │   ├── stage2.asm
-│   │   ├── stage2.ld
+│   │   ├── stage1.asm                          # 第一阶段引导 (MBR, 16 位实模式, 512 字节)
+│   │   ├── stage2.asm                          # 第二阶段引导 (32 位保护模式启用)
+│   │   ├── stage2.ld                           # Stage2 链接脚本
 │   │   └── src/
-│   │       └── lib.rs
+│   │       └── lib.rs                          # Stage2 Rust 实现 (ELF 解析、内核加载)
 │   │
-│   ├── uefi/
+│   ├── uefi/                                   # UEFI 现代引导模式 (UEFI 固件下运行)
 │   │   ├── Cargo.toml
 │   │   ├── Cargo.lock
-│   │   ├── build.rs
+│   │   ├── build.rs                            # 构建脚本
 │   │   └── src/
-│   │       ├── main.rs
-│   │       ├── graphics.rs
-│   │       └── memory.rs
+│   │       ├── main.rs                         # UEFI 主入口
+│   │       ├── graphics.rs                     # UEFI 图形初始化
+│   │       └── memory.rs                       # UEFI 内存映射获取
 │   │
-│   └── common/
-│       ├── multiboot2.rs
-│       └── boot_info.rs
+│   └── common/                                 # 引导程序通用代码
+│       ├── multiboot2.rs                       # Multiboot2 协议定义 (GRUB 兼容)
+│       └── boot_info.rs                        # 引导信息结构体
 │
-├── kernel/
+├── kernel/                                     # 内核主程序
 │   ├── Cargo.toml
 │   ├── Cargo.lock
-│   ├── build.rs
-│   ├── kernel.ld
-│   ├── x86_64-unknown-axis.json
+│   ├── build.rs                                # 构建脚本 (交叉编译配置)
+│   ├── kernel.ld                               # 内核链接脚本 (内存布局定义)
+│   ├── x86_64-unknown-axis.json                # 自定义 target 定义 (x86_64 编译目标)
 │   │
 │   └── src/
-│       ├── main.rs
-│       ├── lib.rs
-│       ├── panic.rs
-│       ├── prelude.rs
+│       ├── main.rs                             # 内核主函数入口
+│       ├── lib.rs                              # 内核库根模块
+│       ├── panic.rs                            # Panic 处理器 (系统崩溃处理)
+│       ├── prelude.rs                          # 常用类型和宏预导入
 │       │
-│       ├── arch/
+│       ├── arch/                               # 架构特定代码 (CPU、中断、上下文切换等)
 │       │   ├── mod.rs
-│       │   └── x86_64/
+│       │   └── x86_64/                         # x86_64 架构实现
 │       │       ├── mod.rs
-│       │       ├── boot.asm
-│       │       ├── cpu.rs
-│       │       ├── gdt.rs
-│       │       ├── idt.rs
-│       │       ├── paging.rs
+│       │       ├── boot.asm                    # 内核启动代码 (64 位验证、栈初始化)
+│       │       ├── cpu.rs                      # CPU 特性检测和启用
+│       │       ├── gdt.rs                      # GDT (全局描述符表) 设置
+│       │       ├── idt.rs                      # IDT (中断描述符表) 设置
+│       │       ├── paging.rs                   # 分页机制初始化
 │       │       │
-│       │       ├── interrupt/
+│       │       ├── interrupt/                  # 中断和异常处理
 │       │       │   ├── mod.rs
-│       │       │   ├── entry.asm
-│       │       │   ├── handler.rs
-│       │       │   ├── apic.rs
-│       │       │   ├── ioapic.rs
-│       │       │   ├── msi.rs
-│       │       │   └── timer.rs
+│       │       │   ├── entry.asm               # 中断入口存根 (汇编)
+│       │       │   ├── handler.rs              # 中断处理逻辑 (Rust)
+│       │       │   ├── apic.rs                 # APIC 本地中断控制器
+│       │       │   ├── ioapic.rs               # I/O APIC 中断控制器
+│       │       │   ├── msi.rs                  # MSI/MSI-X 消息信号中断
+│       │       │   └── timer.rs                # 定时器中断处理
 │       │       │
-│       │       └── context/
+│       │       └── context/                    # 进程上下文和状态保存
 │       │           ├── mod.rs
-│       │           ├── frame.rs
-│       │           └── switch.asm
+│       │           ├── frame.rs                # 异常栈帧结构体
+│       │           └── switch.asm              # 上下文切换汇编代码
 │       │
-│       ├── sync/
+│       ├── sync/                               # 同步原语和并发控制
 │       │   ├── mod.rs
-│       │   ├── spinlock.rs
-│       │   ├── mutex.rs
-│       │   ├── rwlock.rs
-│       │   ├── semaphore.rs
-│       │   ├── condvar.rs
-│       │   ├── barrier.rs
-│       │   ├── event.rs
-│       │   ├── wait_queue.rs
-│       │   └── atomic.rs
+│       │   ├── spinlock.rs                     # 自旋锁 (最底层忙等待锁)
+│       │   ├── mutex.rs                        # 互斥锁 (基于 futex 的内核锁)
+│       │   ├── rwlock.rs                       # 读写锁 (允许多读单写)
+│       │   ├── semaphore.rs                    # 信号量 (通用计数同步)
+│       │   ├── condvar.rs                      # 条件变量 (配合互斥锁的等待机制)
+│       │   ├── barrier.rs                      # 屏障 (线程同步点)
+│       │   ├── event.rs                        # 事件对象 (事件触发同步)
+│       │   ├── wait_queue.rs                   # 等待队列 (进程/线程阻塞队列)
+│       │   └── atomic.rs                       # 原子操作工具函数
 │       │
-│       ├── mm/
+│       ├── mm/                                 # 内存管理 (物理、虚拟、堆)
 │       │   ├── mod.rs
-│       │   ├── pmm.rs
-│       │   │   ├── buddy.rs
-│       │   │   ├── zone.rs
-│       │   │   ├── frame.rs
-│       │   │   ├── numa.rs
-│       │   │   └── watermark.rs
+│       │   ├── pmm.rs                          # 物理内存管理 (伙伴系统分配器)
+│       │   │   ├── buddy.rs                    # 伙伴系统算法
+│       │   │   ├── zone.rs                     # 内存区域管理 (DMA、Normal、High)
+│       │   │   ├── frame.rs                    # 页帧数据结构
+│       │   │   ├── numa.rs                     # NUMA (非一致内存架构) 支持
+│       │   │   └── watermark.rs                # 页面水位标记 (内存压力指示)
 │       │   │
-│       │   ├── vmm.rs
-│       │   │   ├── page_table.rs
-│       │   │   ├── mapping.rs
-│       │   │   ├── layout.rs
-│       │   │   ├── vma.rs
-│       │   │   ├── cow.rs
-│       │   │   ├── hugetlb.rs
-│       │   │   └── swap.rs
+│       │   ├── vmm.rs                          # 虚拟内存管理 (页表、映射、COW)
+│       │   │   ├── page_table.rs               # 四级页表操作
+│       │   │   ├── mapping.rs                  # 虚拟地址到物理地址的映射
+│       │   │   ├── layout.rs                   # 虚拟地址空间布局
+│       │   │   ├── vma.rs                      # VMA (虚拟内存区域) 描述符
+│       │   │   ├── cow.rs                      # COW (写时复制) 机制
+│       │   │   ├── hugetlb.rs                  # 大页面支持 (2MB、1GB)
+│       │   │   └── swap.rs                     # 交换机制 (内存溢出到磁盘)
 │       │   │
-│       │   ├── heap.rs
-│       │   │   ├── slub.rs
-│       │   │   ├── kmalloc.rs
-│       │   │   └── slab_cache.rs
+│       │   ├── heap.rs                         # 动态内存堆分配
+│       │   │   ├── slub.rs                     # SLUB 分配器
+│       │   │   ├── kmalloc.rs                  # 内核内存分配接口
+│       │   │   └── slab_cache.rs               # Slab 缓存管理
 │       │   │
-│       │   └── addr.rs
+│       │   └── addr.rs                         # 地址工具函数 (虚拟/物理转换)
 │       │
-│       ├── task/
+│       ├── task/                               # 进程和线程管理 (调度、生命周期)
 │       │   ├── mod.rs
-│       │   ├── process.rs
-│       │   ├── pcb.rs
-│       │   ├── thread.rs
-│       │   ├── namespace.rs
+│       │   ├── process.rs                      # 进程操作 (fork、exec、exit、wait)
+│       │   ├── pcb.rs                          # PCB (进程控制块) 数据结构
+│       │   ├── thread.rs                       # 线程数据结构和操作
+│       │   ├── namespace.rs                    # 命名空间 (PID、Network、Mount、UTS、IPC、User)
 │       │   │
-│       │   ├── scheduler/
+│       │   ├── scheduler/                      # CPU 调度器实现
 │       │   │   ├── mod.rs
-│       │   │   ├── cfs.rs
-│       │   │   ├── load_balance.rs
-│       │   │   ├── cpu_affinity.rs
-│       │   │   └── preemption.rs
+│       │   │   ├── cfs.rs                      # CFS (完全公平调度器) 主体
+│       │   │   ├── load_balance.rs             # 负载均衡 (多核任务分配)
+│       │   │   ├── cpu_affinity.rs             # CPU 亲和性 (绑定任务到 CPU)
+│       │   │   └── preemption.rs               # 抢占调度 (高优先级任务插队)
 │       │   │
-│       │   ├── signal.rs
-│       │   ├── cgroup.rs
-│       │   └── resource.rs
+│       │   ├── signal.rs                       # 信号处理机制
+│       │   ├── cgroup.rs                       # cgroup v2 资源控制
+│       │   └── resource.rs                     # 资源限制 (rlimit)
 │       │
 │       ├── fs/
-│       │   ├── mod.rs
-│       │   ├── vfs.rs
-│       │   ├── file.rs
-│       │   ├── dentry.rs
+│       │   ├── mod.rs                          # VFS 抽象层入口
+│       │   ├── vfs.rs                          # 虚拟文件系统核心接口 (Inode、File trait)
+│       │   ├── file.rs                         # 文件对象和文件操作实现
+│       │   ├── dentry.rs                       # 目录项 (dentry) 数据结构
 │       │   │
-│       │   ├── filesystems/
+│       │   ├── filesystems/                    # 各种具体的文件系统实现
 │       │   │   ├── mod.rs
-│       │   │   ├── tmpfs.rs
-│       │   │   ├── devfs.rs
-│       │   │   ├── procfs.rs
-│       │   │   ├── sysfs.rs
-│       │   │   └── exfat.rs
+│       │   │   ├── tmpfs.rs                    # 临时内存文件系统 (tmpfs)
+│       │   │   ├── devfs.rs                    # 设备文件系统 (devfs)
+│       │   │   ├── procfs.rs                   # proc 文件系统 (/proc)
+│       │   │   ├── sysfs.rs                    # sysfs 文件系统 (/sys)
+│       │   │   └── exfat.rs                    # exFAT 文件系统驱动
 │       │   │
-│       │   ├── inode.rs
-│       │   ├── path.rs
-│       │   ├── mount.rs
-│       │   ├── dcache.rs
-│       │   └── pagecache.rs
+│       │   ├── inode.rs                        # Inode 元数据和操作实现
+│       │   ├── path.rs                         # 路径解析和遍历实现
+│       │   ├── mount.rs                        # 挂载点管理和处理
+│       │   ├── dcache.rs                       # 目录项缓存 (dentry cache)
+│       │   └── pagecache.rs                    # 页缓存实现 (page cache)
 │       │
-│       ├── drivers/
+│       ├── net/                                # 网络协议栈
 │       │   ├── mod.rs
 │       │   │
-│       │   ├── serial/
+│       │   ├── link/                           # 链路层协议实现
 │       │   │   ├── mod.rs
-│       │   │   └── uart16550.rs
+│       │   │   ├── ethernet.rs                 # 以太网协议处理
+│       │   │   └── arp.rs                      # ARP (地址解析协议)
 │       │   │
-│       │   ├── display/
+│       │   ├── ip/                             # IP 层协议实现
 │       │   │   ├── mod.rs
-│       │   │   ├── fb.rs
-│       │   │   ├── gop.rs
-│       │   │   └── vesafb.rs
+│       │   │   ├── ipv4.rs                     # IPv4 协议处理和路由
+│       │   │   ├── ipv6.rs                     # IPv6 协议处理和自动配置
+│       │   │   ├── routing.rs                  # 路由表管理和查询
+│       │   │   ├── icmp.rs                     # ICMP 协议 (ping)
+│       │   │   ├── icmpv6.rs                   # ICMPv6 协议 (邻居发现)
+│       │   │   └── fragment.rs                 # IP 分片和重组
 │       │   │
-│       │   ├── input/
+│       │   ├── transport/                      # 传输层协议实现
 │       │   │   ├── mod.rs
-│       │   │   ├── hid.rs
-│       │   │   ├── keyboard.rs
-│       │   │   └── mouse.rs
+│       │   │   ├── tcp.rs                      # TCP 协议栈实现
+│       │   │   ├── udp.rs                      # UDP 协议实现
+│       │   │   ├── sctp.rs                     # SCTP 流控制协议
+│       │   │   └── socket.rs                   # Socket 抽象接口
 │       │   │
-│       │   ├── block/
-│       │   │   ├── mod.rs
-│       │   │   ├── nvme.rs
-│       │   │   ├── ahci.rs
-│       │   │   ├── virtio.rs
-│       │   │   ├── io_scheduler.rs
-│       │   │   └── blk_queue.rs
-│       │   │
-│       │   ├── network/
-│       │   │   ├── mod.rs
-│       │   │   │
-│       │   │   ├── nic/
-│       │   │   │   ├── mod.rs
-│       │   │   │   ├── e1000.rs
-│       │   │   │   ├── igc.rs
-│       │   │   │   ├── virtio.rs
-│       │   │   │   └── driver.rs
-│       │   │   │
-│       │   │   ├── link/
-│       │   │   │   ├── mod.rs
-│       │   │   │   ├── ethernet.rs
-│       │   │   │   └── arp.rs
-│       │   │   │
-│       │   │   ├── ip/
-│       │   │   │   ├── mod.rs
-│       │   │   │   ├── ipv4.rs
-│       │   │   │   ├── ipv6.rs
-│       │   │   │   ├── routing.rs
-│       │   │   │   ├── icmp.rs
-│       │   │   │   ├── icmpv6.rs
-│       │   │   │   └── fragment.rs
-│       │   │   │
-│       │   │   ├── transport/
-│       │   │   │   ├── mod.rs
-│       │   │   │   ├── tcp.rs
-│       │   │   │   ├── udp.rs
-│       │   │   │   ├── sctp.rs
-│       │   │   │   └── socket.rs
-│       │   │   │
-│       │   │   ├── io_uring.rs
-│       │   │   ├── config.rs
-│       │   │   └── offload.rs
-│       │   │
-│       │   ├── pci/
-│       │   │   ├── mod.rs
-│       │   │   ├── config.rs
-│       │   │   ├── device.rs
-│       │   │   ├── ecam.rs
-│       │   │   ├── dma.rs
-│       │   │   └── iommu.rs
-│       │   │
-│       │   ├── acpi/
-│       │   │   ├── mod.rs
-│       │   │   ├── parse.rs
-│       │   │   └── tables.rs
-│       │   │
-│       │   └── rtc.rs
+│       │   ├── io_uring.rs                     # io_uring 高性能异步接口
+│       │   ├── config.rs                       # 网络栈配置和参数
+│       │   └── offload.rs                      # 硬件卸载支持 (TSO、GRO 等)
 │       │
-│       ├── syscall/
+│       ├── drivers/                           # 硬件设备驱动层
 │       │   ├── mod.rs
-│       │   ├── dispatch.rs
-│       │   ├── fs.rs
-│       │   ├── process.rs
-│       │   ├── memory.rs
-│       │   ├── signal.rs
-│       │   ├── ipc.rs
-│       │   ├── net.rs
-│       │   ├── time.rs
-│       │   ├── io_uring.rs
-│       │   ├── ebpf.rs
-│       │   ├── cgroup.rs
-│       │   ├── namespace.rs
-│       │   ├── perf.rs
-│       │   └── misc.rs
-│       │
-│       ├── ebpf/
-│       │   ├── mod.rs
-│       │   ├── verifier.rs
-│       │   ├── vm.rs
-│       │   ├── jit.rs
-│       │   ├── maps.rs
-│       │   ├── helpers.rs
-│       │   └── prog.rs
-│       │
-│       ├── lib/
-│       │   ├── mod.rs
-│       │   ├── print.rs
 │       │   │
-│       │   ├── collections/
+│       │   ├── serial/                         # 串口驱动
 │       │   │   ├── mod.rs
-│       │   │   ├── ring_buffer.rs
-│       │   │   ├── btree.rs
-│       │   │   ├── radix_tree.rs
-│       │   │   ├── bitmap.rs
-│       │   │   ├── lru.rs
-│       │   │   └── lockfree/
+│       │   │   └── uart16550.rs                # UART 16550 兼容串口控制器
+│       │   │
+│       │   ├── display/                        # 显示驱动
+│       │   │   ├── mod.rs
+│       │   │   ├── fb.rs                       # 帧缓冲 (framebuffer)
+│       │   │   ├── gop.rs                      # UEFI GOP 图形驱动
+│       │   │   └── vesafb.rs                   # VESA 帧缓冲驱动
+│       │   │
+│       │   ├── input/                          # 输入设备驱动
+│       │   │   ├── mod.rs
+│       │   │   ├── hid.rs                      # HID (人机交互设备) 通用驱动
+│       │   │   ├── keyboard.rs                 # 键盘驱动
+│       │   │   └── mouse.rs                    # 鼠标驱动
+│       │   │
+│       │   ├── block/                          # 块存储设备驱动
+│       │   │   ├── mod.rs
+│       │   │   ├── nvme.rs                     # NVMe (高速 SSD) 驱动
+│       │   │   ├── ahci.rs                     # AHCI (SATA 控制器) 驱动
+│       │   │   ├── virtio.rs                   # VirtIO 虚拟块设备驱动
+│       │   │   ├── io_scheduler.rs             # I/O 调度器 (CFQ、Noop 等)
+│       │   │   └── blk_queue.rs                # 块设备请求队列管理
+│       │   │
+│       │   ├── nic/                            # 网络接口卡 (NIC) 驱动 (仅硬件驱动层)
+│       │   │   ├── mod.rs
+│       │   │   ├── e1000.rs                    # Intel e1000 网卡驱动
+│       │   │   ├── igc.rs                      # Intel i225/i226 网卡驱动
+│       │   │   ├── virtio.rs                   # VirtIO 虚拟网卡驱动
+│       │   │   └── driver.rs                   # 通用网卡驱动框架
+│       │   │
+│       │   ├── pci/                            # PCI 总线枚举和配置
+│       │   │   ├── mod.rs
+│       │   │   ├── config.rs                   # PCI 配置空间读写
+│       │   │   ├── device.rs                   # PCI 设备对象和操作
+│       │   │   ├── ecam.rs                     # ECAM (增强型配置地址映射)
+│       │   │   ├── dma.rs                      # DMA (直接内存访问) 管理
+│       │   │   └── iommu.rs                    # IOMMU (I/O 内存管理单元)
+│       │   │
+│       │   ├── acpi/                           # ACPI (高级配置和电源接口)
+│       │   │   ├── mod.rs
+│       │   │   ├── parse.rs                    # ACPI 表解析器
+│       │   │   └── tables.rs                   # ACPI 数据表定义
+│       │   │
+│       │   └── rtc.rs                          # RTC (实时时钟) 驱动
+│       │
+│       ├── syscall/                            # 系统调用接口 (用户态进入内核)
+│       │   ├── mod.rs
+│       │   ├── dispatch.rs                     # 系统调用分发器 (路由到具体处理函数)
+│       │   ├── fs.rs                           # 文件系统相关系统调用 (open、read、write、stat)
+│       │   ├── process.rs                      # 进程相关系统调用 (fork、execve、exit)
+│       │   ├── memory.rs                       # 内存相关系统调用 (mmap、brk、mprotect)
+│       │   ├── signal.rs                       # 信号相关系统调用 (kill、signal、sigaction)
+│       │   ├── ipc.rs                          # IPC 系统调用 (msgget、shmget、semget)
+│       │   ├── net.rs                          # 网络相关系统调用 (socket、connect、send)
+│       │   ├── time.rs                         # 时间相关系统调用 (gettimeofday、nanosleep)
+│       │   ├── io_uring.rs                     # io_uring 异步 I/O 系统调用
+│       │   ├── ebpf.rs                         # eBPF 加载和管理系统调用
+│       │   ├── cgroup.rs                       # cgroup 相关系统调用
+│       │   ├── namespace.rs                    # 命名空间相关系统调用 (unshare、setns)
+│       │   ├── perf.rs                         # 性能计数相关系统调用
+│       │   └── misc.rs                         # 其他杂项系统调用
+│       │
+│       ├── ebpf/                               # eBPF (扩展的伯克利包过滤器) 虚拟机
+│       │   ├── mod.rs
+│       │   ├── verifier.rs                     # eBPF 字节码验证器 (安全性检查)
+│       │   ├── vm.rs                           # eBPF 虚拟机执行引擎
+│       │   ├── jit.rs                          # JIT 编译器 (字节码到本地代码)
+│       │   ├── maps.rs                         # eBPF Map 数据结构 (用户态/内核态通信)
+│       │   ├── helpers.rs                      # eBPF 辅助函数 (内核接口)
+│       │   └── prog.rs                         # eBPF 程序管理 (加载、附加、执行)
+│       │
+│       ├── lib/                                # 通用库函数和工具
+│       │   ├── mod.rs
+│       │   ├── print.rs                        # 打印和日志函数
+│       │   │
+│       │   ├── collections/                    # 数据结构库
+│       │   │   ├── mod.rs
+│       │   │   ├── ring_buffer.rs              # 环形缓冲区 (定长循环缓冲)
+│       │   │   ├── btree.rs                    # B 树 (有序数据结构)
+│       │   │   ├── radix_tree.rs               # Radix 树 (高效的前缀树)
+│       │   │   ├── bitmap.rs                   # 位图 (高效的布尔数组)
+│       │   │   ├── lru.rs                      # LRU 缓存 (最近最少使用替换)
+│       │   │   └── lockfree/                   # 无锁并发数据结构 (高性能)
 │       │   │       ├── mod.rs
-│       │   │       ├── stack.rs
-│       │   │       ├── queue.rs
-│       │   │       └── hashmap.rs
+│       │   │       ├── stack.rs                # 无锁栈 (LIFO 队列)
+│       │   │       ├── queue.rs                # 无锁队列 (FIFO 队列)
+│       │   │       └── hashmap.rs              # 无锁哈希表 (CAS 原子操作实现)
 │       │   │
-│       │   ├── string.rs
-│       │   ├── hash.rs
-│       │   ├── crc.rs
-│       │   ├── bit.rs
-│       │   ├── result.rs
-│       │   ├── time.rs
-│       │   └── debug.rs
+│       │   ├── string.rs                       # 字符串处理工具
+│       │   ├── hash.rs                         # 哈希函数库
+│       │   ├── crc.rs                          # CRC 校验码计算
+│       │   ├── bit.rs                          # 位操作工具函数
+│       │   ├── result.rs                       # 错误处理 Result/Option
+│       │   ├── time.rs                         # 时间计算和格式化
+│       │   └── debug.rs                        # 调试输出工具
 │       │
-│       └── config.rs
+│       └── config.rs                           # 内核编译时配置常量
 │
-├── Makefile
-├── build.sh
-├── run_qemu.sh
-├── run_grub.sh
-├── run_uefi.sh
-├── .cargo/config.toml
-├── .gitignore
-├── Cargo.toml
-├── Cargo.lock
-├── dev/
-│   ├── dev.md
-│   └── arch.md
-├── README.md
-└── README.zh-CN.md
+├── Makefile                                    # 构建系统主入口 (编译、运行、清理)
+├── build.sh                                    # Shell 构建脚本
+├── run_qemu.sh                                 # QEMU 虚拟机启动脚本 (BIOS 模式)
+├── run_grub.sh                                 # GRUB 引导启动脚本
+├── run_uefi.sh                                 # UEFI 模式启动脚本
+├── .cargo/config.toml                          # Cargo 配置 (编译器选项、依赖定义)
+├── .gitignore                                  # Git 忽略文件列表
+├── Cargo.toml                                  # 项目清单文件 (依赖、元数据)
+├── Cargo.lock                                  # 依赖版本锁定文件
+├── dev/                                        # 开发者文件夹
+│   ├── dev.md                                  # 开发者文档
+│   └── arch.md                                 # 架构设计文档
+├── README.md                                   # 项目概览 (英文)
+└── README.zh-CN.md                             # 项目概览 (中文)
 
 <br>
 
 
 
-## 模块详解
+## 部分模块详解
 
 ### 1. Bootloader
 
@@ -2031,93 +2031,9 @@ impl Inode for ExfatInode {
 
 ---
 
-### 7. Device Drivers (drivers/)
+### 7. Network (net/)
 
-#### drivers/block/nvme.rs
-
-用途: NVMe（现代高速存储）驱动
-
-实现思路:
-- 通过 PCI 发现 NVMe 设备
-- 实现 NVMe 命令提交和完成处理
-- 支持多个队列对（queue pairs）
-- 支持 MSI-X 中断
-
-代码框架:
-pub struct NvmeController {
-    pci_device: Arc<PciDevice>,
-    bar0: *mut u8,           // BAR0 寄存器地址
-    admin_queue: NvmeQueue,
-    io_queues: Vec<NvmeQueue>,
-    ns_list: Vec<NvmeNamespace>,
-}
-
-pub struct NvmeQueue {
-    sqe_base: u64,     // 提交队列入口基地址
-    cqe_base: u64,     // 完成队列入口基地址
-    sq_head: u16,
-    sq_tail: u16,
-    cq_head: u16,
-    cq_phase: bool,
-}
-
-impl NvmeController {
-    pub fn new(pci_device: Arc<PciDevice>) -> Result<Self> {
-        let mut ctrl = NvmeController {
-            pci_device,
-            bar0: null_mut(),
-            admin_queue: NvmeQueue::new(),
-            io_queues: Vec::new(),
-            ns_list: Vec::new(),
-        };
-
-        // 1. 初始化控制器
-        ctrl.enable_controller()?;
-
-        // 2. 创建 I/O 队列对
-        for i in 0..num_cpus() {
-            ctrl.create_io_queue_pair(i)?;
-        }
-
-        // 3. 识别名字空间
-        ctrl.identify_namespaces()?;
-
-        Ok(ctrl)
-    }
-
-    pub fn submit_read(&self, ns_id: u32, lba: u64, num_blocks: u16, buffer: &mut [u8]) -> Result<()> {
-        // 构造 NVMe Read 命令
-        let cmd = NvmeCommand::Read {
-            ns_id,
-            lba,
-            num_blocks,
-        };
-
-        // 提交到 I/O 队列
-        self.io_queues[cpu_id()].submit(cmd)?;
-
-        Ok(())
-    }
-}
-
-impl BlockDevice for NvmeController {
-    fn read(&self, sector: u64, count: u32, buffer: &mut [u8]) -> Result<u32> {
-        // LBA 通常 = sector / 8（假设 4KB 块）
-        let lba = sector >> 3;
-        let num_blocks = ((count + 7) >> 3) as u16;
-
-        self.submit_read(1, lba, num_blocks, buffer)?;
-        Ok(count)
-    }
-
-    fn write(&self, sector: u64, count: u32, buffer: &[u8]) -> Result<u32> {
-        // 类似 read
-        Ok(count)
-    }
-}
-
----
-#### drivers/network/ip/ipv6.rs
+#### net/ip/ipv6.rs
 
 用途: IPv6 协议实现（现代网络优先选择 IPv6）
 
@@ -2191,7 +2107,7 @@ impl Ipv6Stack {
 }
 
 ---
-#### drivers/network/io_uring.rs
+#### net/io_uring.rs
 
 用途: io_uring 异步 I/O 接口（现代高性能异步 I/O）
 
@@ -2282,7 +2198,94 @@ pub fn sys_io_uring_enter(io_uring: &Arc<IoUring>, to_submit: u32, min_complete:
 
 ---
 
-### 8. System Calls (syscall/)
+### 8. Device Drivers (drivers/)
+
+#### drivers/block/nvme.rs
+
+用途: NVMe（现代高速存储）驱动
+
+实现思路:
+- 通过 PCI 发现 NVMe 设备
+- 实现 NVMe 命令提交和完成处理
+- 支持多个队列对（queue pairs）
+- 支持 MSI-X 中断
+
+代码框架:
+pub struct NvmeController {
+    pci_device: Arc<PciDevice>,
+    bar0: *mut u8,           // BAR0 寄存器地址
+    admin_queue: NvmeQueue,
+    io_queues: Vec<NvmeQueue>,
+    ns_list: Vec<NvmeNamespace>,
+}
+
+pub struct NvmeQueue {
+    sqe_base: u64,     // 提交队列入口基地址
+    cqe_base: u64,     // 完成队列入口基地址
+    sq_head: u16,
+    sq_tail: u16,
+    cq_head: u16,
+    cq_phase: bool,
+}
+
+impl NvmeController {
+    pub fn new(pci_device: Arc<PciDevice>) -> Result<Self> {
+        let mut ctrl = NvmeController {
+            pci_device,
+            bar0: null_mut(),
+            admin_queue: NvmeQueue::new(),
+            io_queues: Vec::new(),
+            ns_list: Vec::new(),
+        };
+
+        // 1. 初始化控制器
+        ctrl.enable_controller()?;
+
+        // 2. 创建 I/O 队列对
+        for i in 0..num_cpus() {
+            ctrl.create_io_queue_pair(i)?;
+        }
+
+        // 3. 识别名字空间
+        ctrl.identify_namespaces()?;
+
+        Ok(ctrl)
+    }
+
+    pub fn submit_read(&self, ns_id: u32, lba: u64, num_blocks: u16, buffer: &mut [u8]) -> Result<()> {
+        // 构造 NVMe Read 命令
+        let cmd = NvmeCommand::Read {
+            ns_id,
+            lba,
+            num_blocks,
+        };
+
+        // 提交到 I/O 队列
+        self.io_queues[cpu_id()].submit(cmd)?;
+
+        Ok(())
+    }
+}
+
+impl BlockDevice for NvmeController {
+    fn read(&self, sector: u64, count: u32, buffer: &mut [u8]) -> Result<u32> {
+        // LBA 通常 = sector / 8（假设 4KB 块）
+        let lba = sector >> 3;
+        let num_blocks = ((count + 7) >> 3) as u16;
+
+        self.submit_read(1, lba, num_blocks, buffer)?;
+        Ok(count)
+    }
+
+    fn write(&self, sector: u64, count: u32, buffer: &[u8]) -> Result<u32> {
+        // 类似 read
+        Ok(count)
+    }
+}
+
+---
+
+### 9. System Calls (syscall/)
 
 #### syscall/dispatch.rs
 
@@ -2349,6 +2352,7 @@ frame.rax = result as u64;
 ---
 
 #### syscall/io_uring.rs
+
 **用途**: io_uring 系统调用实现
 
 **实现思路**:
@@ -2411,7 +2415,7 @@ pub fn sys_io_uring_register(fd: i32, opcode: u32, arg: u64, nr_args: u32) -> Re
 
 ---
 
-### 9. eBPF Subsystem (ebpf/)
+### 10. eBPF Subsystem (ebpf/)
 
 #### ebpf/verifier.rs
 
@@ -2609,7 +2613,7 @@ pub enum BpfMapType {
 
 ---
 
-### 10. Library Functions (lib/)
+### 11. Library Functions (lib/)
 
 #### lib/collections/lockfree/
 
