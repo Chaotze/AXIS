@@ -238,6 +238,16 @@ AXIS/
 │       │   ├── perf.rs                         # 性能计数相关系统调用
 │       │   └── misc.rs                         # 其他杂项系统调用
 │       │
+│       ├── compat/                             # Linux 兼容层 (运行 Linux 二进制程序)
+│       │   ├── mod.rs
+│       │   ├── loader.rs                       # ELF 加载器 (支持动态链接)
+│       │   ├── interpreter.rs                  # 动态链接器/解释器 (ld-linux.so)
+│       │   ├── syscall_translator.rs           # 系统调用号转换 (Linux ABI -> AXIS ABI)
+│       │   ├── auxv.rs                         # 辅助向量构建 (AT_* 常量)
+│       │   ├── signal_adapter.rs               # 信号处理适配 (Linux 信号语义)
+│       │   ├── procfs_emulation.rs             # /proc 伪文件系统模拟 (不一定必要)
+│       │   └── personality.rs                  # 进程个性设置 (PER_LINUX)
+│       │
 │       ├── lib/                                # 通用库函数和工具
 │       │   ├── mod.rs
 │       │   ├── print.rs                        # 打印和日志函数
@@ -2767,3 +2777,487 @@ impl<T> RadixTree<T> {
         None
     }
 }
+
+---
+
+### 11. Linux Compatibility Layer (compat/)
+
+#### compat/loader.rs
+
+用途: ELF 加载器，支持动态链接的 Linux 程序
+
+实现思路:
+- 解析 ELF 文件头和程序头
+- 支持 PT_INTERP（动态链接器）段
+- 加载共享库依赖
+- 构建进程初始栈（argc、argv、envp、auxv）
+- 支持 PIE (Position Independent Executable)
+
+代码框架:
+```rust
+pub struct ElfLoader {
+    base_addr: u64,
+    entry_point: u64,
+    interpreter: Option<String>,
+    segments: Vec<LoadedSegment>,
+}
+
+pub struct LoadedSegment {
+    vaddr: u64,
+    size: usize,
+    offset: usize,
+    flags: u32,
+}
+
+impl ElfLoader {
+    pub fn load_linux_binary(path: &str) -> Result<Arc<ProcessControlBlock>> {
+        let file = VFS.open(path, OpenFlags::RDONLY)?;
+        let elf_data = file.read_all()?;
+        
+        // 1. 解析 ELF 头
+        let elf = ElfParser::parse(&elf_data)?;
+        
+        // 2. 检查是否需要动态链接器
+        let interpreter = elf.find_interpreter()?;
+        
+        let (entry, base) = if let Some(interp_path) = interpreter {
+            // 动态链接程序，需要加载 ld-linux.so
+            let interp_elf = Self::load_interpreter(&interp_path)?;
+            (interp_elf.entry_point, interp_elf.base_addr)
+        } else {
+            // 静态链接程序
+            (elf.entry_point, 0)
+        };
+        
+        // 3. 创建进程并设置地址空间
+        let mut pcb = ProcessControlBlock::new();
+        pcb.personality = Personality::PER_LINUX;
+        
+        // 4. 加载 ELF 段到内存
+        for segment in &elf.segments {
+            if segment.p_type == PT_LOAD {
+                Self::load_segment(&mut pcb, segment, &elf_data)?;
+            }
+        }
+        
+        // 5. 设置用户栈并构建辅助向量
+        let stack_top = Self::setup_initial_stack(
+            &mut pcb,
+            &elf,
+            entry,
+            base,
+        )?;
+        
+        // 6. 设置进程入口点
+        pcb.context.rip = entry;
+        pcb.context.rsp = stack_top;
+        
+        Ok(Arc::new(pcb))
+    }
+    
+    fn load_interpreter(path: &str) -> Result<ElfLoader> {
+        // 加载 /lib64/ld-linux-x86-64.so.2
+        // 或 /lib/ld-musl-x86_64.so.1
+        let file = VFS.open(path, OpenFlags::RDONLY)?;
+        let elf_data = file.read_all()?;
+        let elf = ElfParser::parse(&elf_data)?;
+        
+        // 动态链接器通常是 PIE，需要选择基地址
+        let base_addr = 0x7ffff7dd0000u64; // 典型的动态链接器加载地址
+        
+        Ok(ElfLoader {
+            base_addr,
+            entry_point: base_addr + elf.entry_point,
+            interpreter: None,
+            segments: Vec::new(),
+        })
+    }
+}
+```
+
+---
+
+#### compat/auxv.rs
+
+用途: 辅助向量（Auxiliary Vector）构建
+
+实现思路:
+- 在进程栈上构建 auxv，传递内核信息给用户态
+- Linux 动态链接器和 libc 依赖 auxv 获取系统信息
+- 包含 VDSO 地址、页大小、程序头位置等
+
+代码:
+```rust
+// Linux auxv 类型常量
+pub const AT_NULL: u64 = 0;
+pub const AT_IGNORE: u64 = 1;
+pub const AT_EXECFD: u64 = 2;
+pub const AT_PHDR: u64 = 3;          // 程序头表地址
+pub const AT_PHENT: u64 = 4;         // 程序头表项大小
+pub const AT_PHNUM: u64 = 5;         // 程序头表项数量
+pub const AT_PAGESZ: u64 = 6;        // 页大小
+pub const AT_BASE: u64 = 7;          // 解释器基地址
+pub const AT_FLAGS: u64 = 8;
+pub const AT_ENTRY: u64 = 9;         // 程序入口点
+pub const AT_NOTELF: u64 = 10;
+pub const AT_UID: u64 = 11;
+pub const AT_EUID: u64 = 12;
+pub const AT_GID: u64 = 13;
+pub const AT_EGID: u64 = 14;
+pub const AT_PLATFORM: u64 = 15;     // 平台字符串
+pub const AT_HWCAP: u64 = 16;        // 硬件能力标志
+pub const AT_CLKTCK: u64 = 17;       // 时钟频率
+pub const AT_SECURE: u64 = 23;       // 安全模式标志
+pub const AT_RANDOM: u64 = 25;       // 16 字节随机数
+pub const AT_HWCAP2: u64 = 26;
+pub const AT_EXECFN: u64 = 31;       // 可执行文件路径
+pub const AT_SYSINFO_EHDR: u64 = 33; // VDSO 地址
+
+pub struct AuxvBuilder {
+    entries: Vec<(u64, u64)>,
+}
+
+impl AuxvBuilder {
+    pub fn new() -> Self {
+        AuxvBuilder { entries: Vec::new() }
+    }
+    
+    pub fn add(&mut self, typ: u64, val: u64) {
+        self.entries.push((typ, val));
+    }
+    
+    pub fn build_for_linux_process(
+        &mut self,
+        elf: &ElfParser,
+        interp_base: u64,
+        vdso_addr: u64,
+    ) {
+        self.add(AT_PHDR, elf.phdr_addr);
+        self.add(AT_PHENT, elf.phdr_entry_size as u64);
+        self.add(AT_PHNUM, elf.phdr_count as u64);
+        self.add(AT_PAGESZ, PAGE_SIZE as u64);
+        self.add(AT_BASE, interp_base);
+        self.add(AT_ENTRY, elf.entry_point);
+        self.add(AT_UID, current_process().uid as u64);
+        self.add(AT_EUID, current_process().euid as u64);
+        self.add(AT_GID, current_process().gid as u64);
+        self.add(AT_EGID, current_process().egid as u64);
+        self.add(AT_PLATFORM, /* "x86_64" string addr */);
+        self.add(AT_HWCAP, detect_cpu_capabilities());
+        self.add(AT_CLKTCK, 100); // 100 Hz
+        self.add(AT_RANDOM, /* 16-byte random buffer addr */);
+        self.add(AT_SYSINFO_EHDR, vdso_addr);
+        self.add(AT_SECURE, 0);
+        self.add(AT_NULL, 0); // 终止符
+    }
+    
+    pub fn write_to_stack(&self, stack_ptr: &mut u64) {
+        for (typ, val) in self.entries.iter().rev() {
+            *stack_ptr -= 8;
+            unsafe { *(*stack_ptr as *mut u64) = *val; }
+            *stack_ptr -= 8;
+            unsafe { *(*stack_ptr as *mut u64) = *typ; }
+        }
+    }
+}
+```
+
+---
+
+#### compat/syscall_translator.rs
+
+用途: Linux 系统调用号到 AXIS 系统调用的转换
+
+实现思路:
+- 某些 Linux 系统调用需要适配或模拟
+- 处理过时的系统调用（如 fork、vfork）
+- 记录不兼容的系统调用
+- **注意！下方代码所示的调用号转换仅为示意，编码时以当时具体情况为准！**
+- *如 Linux 与 AXIS 的系统调用号本身相同，这部分是否可以适当简化？*
+
+代码:
+```rust
+pub struct SyscallTranslator;
+
+impl SyscallTranslator {
+    pub fn translate_linux_syscall(
+        linux_nr: usize,
+        args: &[u64; 6],
+    ) -> Result<i64> {
+        match linux_nr {
+            // 文件 I/O
+            0 => sys_read(args[0] as i32, args[1] as *mut u8, args[2]),
+            1 => sys_write(args[0] as i32, args[1] as *const u8, args[2]),
+            2 => sys_open(args[0] as *const u8, args[1] as i32, args[2] as u32),
+            3 => sys_close(args[0] as i32),
+            
+            // 进程管理
+            57 => sys_fork(),
+            58 => sys_vfork(), // 映射到 fork + COW
+            59 => sys_execve(args[0] as *const u8, args[1] as *const *const u8, args[2] as *const *const u8),
+            60 => sys_exit(args[0] as i32),
+            61 => sys_wait4(args[0] as i32, args[1] as *mut i32, args[2] as i32),
+            
+            // 内存管理
+            9 => sys_mmap(args[0], args[1], args[2] as i32, args[3] as i32, args[4] as i32, args[5] as i64),
+            10 => sys_mprotect(args[0], args[1], args[2] as i32),
+            11 => sys_munmap(args[0], args[1]),
+            12 => sys_brk(args[0]),
+            
+            // 信号
+            13 => sys_rt_sigaction(args[0] as i32, args[1] as *const SigAction, args[2] as *mut SigAction),
+            14 => sys_rt_sigprocmask(args[0] as i32, args[1] as *const SigSet, args[2] as *mut SigSet),
+            15 => sys_rt_sigreturn(),
+            
+            // 时间
+            228 => sys_clock_gettime(args[0] as i32, args[1] as *mut TimeSpec),
+            230 => sys_clock_nanosleep(args[0] as i32, args[1] as i32, args[2] as *const TimeSpec, args[3] as *mut TimeSpec),
+            
+            // 网络
+            41 => sys_socket(args[0] as i32, args[1] as i32, args[2] as i32),
+            42 => sys_connect(args[0] as i32, args[1] as *const SockAddr, args[2] as u32),
+            43 => sys_accept(args[0] as i32, args[1] as *mut SockAddr, args[2] as *mut u32),
+            
+            // 现代异步 I/O
+            425 => sys_io_uring_setup(args[0] as u32, args[1] as *const IoUringParams),
+            426 => sys_io_uring_enter(args[0] as i32, args[1] as u32, args[2] as u32, args[3] as u32),
+            427 => sys_io_uring_register(args[0] as i32, args[1] as u32, args[2], args[3] as u32),
+            
+            // 不支持的系统调用
+            _ => {
+                log::warn!("Unsupported Linux syscall: {}", linux_nr);
+                Err(Error::NotImplemented)
+            }
+        }
+    }
+}
+```
+
+---
+
+#### compat/signal_adapter.rs
+
+用途: Linux 信号语义适配
+
+实现思路:
+- Linux 信号处理函数调用约定（sigaction、sigreturn）
+- 支持实时信号（SIGRTMIN - SIGRTMAX）
+- 信号栈切换（SA_ONSTACK）
+- **注意！下方代码所示的信号转换仅为示意，编码时以当时具体情况为准！**
+- *如 Linux 与 AXIS 的信号编号本身相同，这部分是否可以适当简化？*
+
+代码:
+```rust
+// Linux 信号编号
+pub const LINUX_SIGHUP: i32 = 1;
+pub const LINUX_SIGINT: i32 = 2;
+pub const LINUX_SIGQUIT: i32 = 3;
+pub const LINUX_SIGILL: i32 = 4;
+pub const LINUX_SIGTRAP: i32 = 5;
+pub const LINUX_SIGABRT: i32 = 6;
+pub const LINUX_SIGBUS: i32 = 7;
+pub const LINUX_SIGFPE: i32 = 8;
+pub const LINUX_SIGKILL: i32 = 9;
+pub const LINUX_SIGUSR1: i32 = 10;
+pub const LINUX_SIGSEGV: i32 = 11;
+pub const LINUX_SIGUSR2: i32 = 12;
+pub const LINUX_SIGPIPE: i32 = 13;
+pub const LINUX_SIGALRM: i32 = 14;
+pub const LINUX_SIGTERM: i32 = 15;
+pub const LINUX_SIGCHLD: i32 = 17;
+pub const LINUX_SIGCONT: i32 = 18;
+pub const LINUX_SIGSTOP: i32 = 19;
+
+pub struct SignalAdapter;
+
+impl SignalAdapter {
+    pub fn linux_to_axis_signal(linux_sig: i32) -> Option<i32> {
+        // 映射 Linux 信号到 AXIS 内部信号
+        match linux_sig {
+            LINUX_SIGHUP => Some(AXIS_SIGHUP),
+            LINUX_SIGINT => Some(AXIS_SIGINT),
+            LINUX_SIGSEGV => Some(AXIS_SIGSEGV),
+            LINUX_SIGTERM => Some(AXIS_SIGTERM),
+            LINUX_SIGCHLD => Some(AXIS_SIGCHLD),
+            _ => None,
+        }
+    }
+    
+    pub fn setup_signal_frame(
+        process: &mut ProcessControlBlock,
+        signum: i32,
+        handler: u64,
+    ) -> Result<()> {
+        // 在用户栈上构建 Linux 信号栈帧
+        let mut sp = process.context.rsp;
+        
+        // 保存原始上下文
+        sp -= core::mem::size_of::<SigContext>() as u64;
+        let sigctx = sp as *mut SigContext;
+        unsafe {
+            (*sigctx).rip = process.context.rip;
+            (*sigctx).rsp = process.context.rsp;
+            (*sigctx).rax = process.context.rax;
+            // ... 保存其他寄存器
+        }
+        
+        // 设置返回地址为 sigreturn
+        sp -= 8;
+        unsafe { *(sp as *mut u64) = process.vdso_sigreturn_addr; }
+        
+        // 调用信号处理函数
+        process.context.rip = handler;
+        process.context.rsp = sp;
+        process.context.rdi = signum as u64; // 第一个参数是信号编号
+        
+        Ok(())
+    }
+}
+```
+
+---
+
+#### compat/procfs_emulation.rs
+
+用途: /proc 文件系统模拟
+
+实现思路:
+- 许多 Linux 程序依赖 /proc 获取系统信息
+- 模拟关键的 /proc 文件（/proc/self、/proc/cpuinfo、/proc/meminfo）
+- 懒加载动态生成文件内容
+- **注意！AXIS 本身已实现 procfs，这部分是否需要模拟有待商榷，届时视具体情况而定！**
+
+代码:
+```rust
+pub struct ProcfsEmulation;
+
+impl ProcfsEmulation {
+    pub fn read_proc_file(path: &str) -> Result<Vec<u8>> {
+        match path {
+            "/proc/self/exe" => {
+                // 返回当前进程可执行文件路径
+                let current = current_process();
+                Ok(current.exe_path.as_bytes().to_vec())
+            }
+            
+            "/proc/self/maps" => {
+                // 返回进程内存映射
+                let current = current_process();
+                let mut output = String::new();
+                for vma in &current.vma_list {
+                    output.push_str(&format!(
+                        "{:016x}-{:016x} {} {:08x} 00:00 0    {}\n",
+                        vma.start,
+                        vma.end,
+                        vma.prot_to_string(),
+                        vma.offset,
+                        vma.name,
+                    ));
+                }
+                Ok(output.into_bytes())
+            }
+            
+            "/proc/cpuinfo" => {
+                // 返回 CPU 信息
+                let cpu_info = format!(
+                    "processor\t: 0\n\
+                     vendor_id\t: GenuineIntel\n\
+                     cpu family\t: 6\n\
+                     model\t\t: 142\n\
+                     model name\t: {}\n\
+                     stepping\t: 12\n\
+                     cpu MHz\t\t: 2400.000\n\
+                     cache size\t: 8192 KB\n\
+                     physical id\t: 0\n\
+                     siblings\t: {}\n\
+                     core id\t\t: 0\n\
+                     cpu cores\t: {}\n\
+                     flags\t\t: fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov\n\n",
+                    cpu_brand_string(),
+                    num_cpus(),
+                    num_cpus(),
+                );
+                Ok(cpu_info.into_bytes())
+            }
+            
+            "/proc/meminfo" => {
+                // 返回内存信息
+                let pmm = PMM.lock();
+                let mem_info = format!(
+                    "MemTotal:       {} kB\n\
+                     MemFree:        {} kB\n\
+                     MemAvailable:   {} kB\n\
+                     Buffers:        {} kB\n\
+                     Cached:         {} kB\n",
+                    pmm.total_pages * 4,
+                    pmm.free_pages * 4,
+                    pmm.free_pages * 4,
+                    0,
+                    0,
+                );
+                Ok(mem_info.into_bytes())
+            }
+            
+            _ => Err(Error::NotFound),
+        }
+    }
+}
+```
+
+---
+
+#### compat/personality.rs
+
+用途: 进程个性（Personality）设置
+
+实现思路:
+- Linux personality 系统调用允许进程选择执行域
+- PER_LINUX 是默认的 Linux 执行域
+- 影响系统调用处理、信号传递、地址空间布局
+
+代码:
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Personality {
+    PER_LINUX = 0x0000,
+    PER_LINUX_32BIT = 0x0008,
+    PER_BSD = 0x0006,
+}
+
+impl ProcessControlBlock {
+    pub fn set_personality(&mut self, pers: Personality) -> Result<()> {
+        self.personality = pers;
+        
+        match pers {
+            Personality::PER_LINUX => {
+                // 启用 Linux 兼容层
+                self.syscall_handler = SyscallTranslator::translate_linux_syscall;
+                self.signal_adapter = Some(SignalAdapter);
+            }
+            _ => {
+                return Err(Error::NotSupported);
+            }
+        }
+        
+        Ok(())
+    }
+}
+
+pub fn sys_personality(persona: u64) -> Result<u64> {
+    let current = current_process_mut();
+    let old_personality = current.personality as u64;
+    
+    if persona != 0xFFFFFFFF {
+        // 设置新的 personality
+        let new_pers = match persona as u32 {
+            0x0000 => Personality::PER_LINUX,
+            0x0008 => Personality::PER_LINUX_32BIT,
+            _ => return Err(Error::Invalid),
+        };
+        
+        current.set_personality(new_pers)?;
+    }
+    
+    Ok(old_personality)
+}
+```
