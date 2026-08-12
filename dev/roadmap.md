@@ -18,7 +18,7 @@
 - 配置文件
   - kernel/x86_64-unknown-axis.json（自定义 target）
   - kernel/kernel.ld（链接脚本）
-  - bootloader/bios/stage2.ld（Stage2 链接脚
+  - bootloader/bios/stage2.ld（Stage2 链接脚本）
 - 构建系统
   - Makefile（主构建入口）
   - build.sh（Shell 构建脚本）
