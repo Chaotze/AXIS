@@ -166,12 +166,10 @@ AXIS/
 │       │   │   ├── mod.rs
 │       │   │   ├── tcp.rs                      # TCP 协议栈实现
 │       │   │   ├── udp.rs                      # UDP 协议实现
-│       │   │   ├── sctp.rs                     # SCTP 流控制协议
 │       │   │   └── socket.rs                   # Socket 抽象接口
 │       │   │
 │       │   ├── io_uring.rs                     # io_uring 高性能异步接口
-│       │   ├── config.rs                       # 网络栈配置和参数
-│       │   └── offload.rs                      # 硬件卸载支持 (TSO、GRO 等)
+│       │   └── config.rs                       # 网络栈配置和参数
 │       │
 │       ├── drivers/                           # 硬件设备驱动层
 │       │   ├── mod.rs
@@ -215,12 +213,10 @@ AXIS/
 │       │   │   ├── dma.rs                      # DMA (直接内存访问) 管理
 │       │   │   └── iommu.rs                    # IOMMU (I/O 内存管理单元)
 │       │   │
-│       │   ├── acpi/                           # ACPI (高级配置和电源接口)
-│       │   │   ├── mod.rs
-│       │   │   ├── parse.rs                    # ACPI 表解析器
-│       │   │   └── tables.rs                   # ACPI 数据表定义
-│       │   │
-│       │   └── rtc.rs                          # RTC (实时时钟) 驱动
+│       │   └── acpi/                           # ACPI (高级配置和电源接口)
+│       │       ├── mod.rs
+│       │       ├── parse.rs                    # ACPI 表解析器
+│       │       └── tables.rs                   # ACPI 数据表定义
 │       │
 │       ├── syscall/                            # 系统调用接口 (用户态进入内核)
 │       │   ├── mod.rs
