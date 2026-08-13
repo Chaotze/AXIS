@@ -15,12 +15,12 @@ use core::arch::asm;
 /// 按照 Multiboot2 协议：
 ///   - EAX = 0x36d76289（Multiboot2 魔数）
 ///   - EBX = 引导信息结构地址
-#[no_mangle]
+#[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
     // 验证 Multiboot2 魔数
     let magic: u32;
     unsafe {
-        asm!("mov {}, eax", out(reg) magic);
+        asm!("mov {0:e}, eax", out(reg) magic);
     }
 
     if magic != 0x36d76289 {

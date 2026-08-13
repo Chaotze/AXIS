@@ -12,6 +12,7 @@
 
 #![no_std]
 #![no_main]
+#![allow(deprecated)]
 
 mod graphics;
 mod memory;
@@ -20,9 +21,41 @@ use uefi::prelude::*;
 use uefi::table::boot::{AllocateType, MemoryType};
 use uefi::proto::media::file::{File, FileAttribute, FileMode};
 use uefi::proto::media::fs::SimpleFileSystem;
-use uefi::Result;
 use core::slice;
 use core::ptr;
+use core::fmt::Write;
+
+// ============================================================
+// Panic 处理器
+// ============================================================
+
+/// Panic 处理器
+///
+/// no_std 环境需要自定义 panic 处理
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    loop {
+        core::hint::spin_loop();
+    }
+}
+
+// ============================================================
+// Compiler Builtins - wcslen
+// ============================================================
+
+/// 提供 wcslen 函数实现（计算宽字符串长度）
+/// UEFI 环境需要这个函数，但 compiler_builtins 在某些配置下不提供
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wcslen(mut s: *const u16) -> usize {
+    let mut len = 0;
+    unsafe {
+        while *s != 0 {
+            len += 1;
+            s = s.add(1);
+        }
+    }
+    len
+}
 
 // ============================================================
 // ELF 文件格式定义
@@ -76,50 +109,44 @@ struct Elf64Phdr {
 /// - `image_handle`: 当前镜像的句柄
 /// - `system_table`: UEFI 系统表，提供所有 UEFI 服务的访问入口
 #[entry]
-fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
-    // 初始化 UEFI 服务（日志、panic handler 等）
-    uefi::helpers::init(&mut system_table).unwrap();
-
-    let boot_services = system_table.boot_services();
-
-    writeln!(system_table.stdout(), "AXIS UEFI Bootloader").unwrap();
-    writeln!(system_table.stdout(), "Loading kernel...").unwrap();
+fn main(image_handle: Handle, mut system_table: SystemTable<uefi::table::Boot>) -> Status {
+    let _ = writeln!(system_table.stdout(), "AXIS UEFI Bootloader");
+    let _ = writeln!(system_table.stdout(), "Loading kernel...");
 
     // 1. 加载内核 ELF 文件
-    let kernel_entry = match load_kernel(image_handle, boot_services) {
+    let kernel_entry = match load_kernel(image_handle, system_table.boot_services()) {
         Ok(entry) => {
-            writeln!(system_table.stdout(), "Kernel loaded at 0x{:x}", entry).unwrap();
+            let _ = writeln!(system_table.stdout(), "Kernel loaded at 0x{:x}", entry);
             entry
         }
         Err(e) => {
-            writeln!(system_table.stdout(), "Failed to load kernel: {:?}", e).unwrap();
+            let _ = writeln!(system_table.stdout(), "Failed to load kernel: {:?}", e);
             return Status::LOAD_ERROR;
         }
     };
 
     // 2. 初始化图形输出（GOP）
-    let framebuffer = match graphics::init_graphics(boot_services) {
+    let _framebuffer = match graphics::init_graphics(system_table.boot_services()) {
         Ok(fb) => {
-            writeln!(
+            let _ = writeln!(
                 system_table.stdout(),
                 "Graphics initialized: {}x{} @ 0x{:x}",
                 fb.width, fb.height, fb.addr
-            )
-            .unwrap();
+            );
             Some(fb)
         }
         Err(e) => {
-            writeln!(system_table.stdout(), "Graphics init failed: {:?}", e).unwrap();
+            let _ = writeln!(system_table.stdout(), "Graphics init failed: {:?}", e);
             None
         }
     };
 
     // 3. 获取内存映射
-    writeln!(system_table.stdout(), "Getting memory map...").unwrap();
-    let memory_map = memory::get_memory_map(boot_services).unwrap();
+    let _ = writeln!(system_table.stdout(), "Getting memory map...");
+    let _memory_map = memory::get_memory_map(system_table.boot_services()).unwrap();
 
     // 4. 获取 ACPI RSDP 地址
-    let rsdp_addr = system_table
+    let _rsdp_addr = system_table
         .config_table()
         .iter()
         .find(|entry| {
@@ -129,12 +156,13 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
         .map(|entry| entry.address as u64);
 
     // 5. ExitBootServices
-    writeln!(system_table.stdout(), "Exiting boot services...").unwrap();
+    let _ = writeln!(system_table.stdout(), "Exiting boot services...");
 
     // ExitBootServices 会终止 UEFI 引导服务
     // 之后无法再使用 UEFI 的大部分服务（除了运行时服务）
-    let (_runtime_system_table, _memory_map) = system_table
-        .exit_boot_services(MemoryType::LOADER_DATA);
+    let (_runtime_system_table, _memory_map) = unsafe {
+        system_table.exit_boot_services(MemoryType::LOADER_DATA)
+    };
 
     // 6. 跳转到内核
     // 传递引导信息（这里简化处理，实际应该构建完整的 Multiboot2 结构）
@@ -150,7 +178,7 @@ fn main(image_handle: Handle, mut system_table: SystemTable<Boot>) -> Status {
 /// 从 EFI 系统分区加载内核 ELF 文件
 ///
 /// 读取路径：\EFI\AXIS\kernel.elf
-fn load_kernel(image_handle: Handle, boot_services: &BootServices) -> Result<u64> {
+fn load_kernel(_image_handle: Handle, boot_services: &uefi::table::boot::BootServices) -> uefi::Result<u64> {
     // 获取简单文件系统协议（访问 ESP 分区）
     let fs_handle = boot_services
         .get_handle_for_protocol::<SimpleFileSystem>()?;
@@ -172,14 +200,15 @@ fn load_kernel(image_handle: Handle, boot_services: &BootServices) -> Result<u64
 
     // 获取文件大小
     let mut info_buffer = [0u8; 512];
-    let file_info = kernel_file.get_info::<uefi::proto::media::file::FileInfo>(&mut info_buffer)?;
+    let file_info = kernel_file.get_info::<uefi::proto::media::file::FileInfo>(&mut info_buffer)
+        .map_err(|e| e.status())?;
     let kernel_size = file_info.file_size() as usize;
 
     // 分配内存缓冲区
     let kernel_buffer = boot_services.allocate_pool(MemoryType::LOADER_DATA, kernel_size)?;
 
     // 读取文件到内存
-    let kernel_data = unsafe { slice::from_raw_parts_mut(kernel_buffer, kernel_size) };
+    let kernel_data = unsafe { slice::from_raw_parts_mut(kernel_buffer.as_ptr(), kernel_size) };
     kernel_file.read(kernel_data)?;
 
     // 解析并加载 ELF
@@ -192,9 +221,9 @@ fn load_kernel(image_handle: Handle, boot_services: &BootServices) -> Result<u64
 ///
 /// # Safety
 /// 调用者必须确保 elf_data 指向有效的 ELF 文件数据
-unsafe fn load_elf(elf_data: *const u8, boot_services: &BootServices) -> Result<u64> {
+unsafe fn load_elf(elf_data: *const u8, boot_services: &uefi::table::boot::BootServices) -> uefi::Result<u64> {
     // 读取 ELF 文件头
-    let ehdr = &*(elf_data as *const Elf64Ehdr);
+    let ehdr = unsafe { &*(elf_data as *const Elf64Ehdr) };
 
     // 验证 ELF 魔数
     let magic = u32::from_le_bytes([
@@ -215,11 +244,11 @@ unsafe fn load_elf(elf_data: *const u8, boot_services: &BootServices) -> Result<
     let entry = ehdr.e_entry;
 
     // 加载所有 PT_LOAD 段
-    let phdr_base = elf_data.add(ehdr.e_phoff as usize) as *const Elf64Phdr;
+    let phdr_base = unsafe { elf_data.add(ehdr.e_phoff as usize) as *const Elf64Phdr };
     let phdr_count = ehdr.e_phnum as usize;
 
     for i in 0..phdr_count {
-        let phdr = &*phdr_base.add(i);
+        let phdr = unsafe { &*phdr_base.add(i) };
 
         if phdr.p_type != PT_LOAD {
             continue;
@@ -237,15 +266,17 @@ unsafe fn load_elf(elf_data: *const u8, boot_services: &BootServices) -> Result<
         )?;
 
         // 复制段内容
-        let src = elf_data.add(phdr.p_offset as usize);
-        let dst = phdr.p_paddr as *mut u8;
-        ptr::copy_nonoverlapping(src, dst, phdr.p_filesz as usize);
+        unsafe {
+            let src = elf_data.add(phdr.p_offset as usize);
+            let dst = phdr.p_paddr as *mut u8;
+            ptr::copy_nonoverlapping(src, dst, phdr.p_filesz as usize);
 
-        // 清零 BSS
-        if phdr.p_memsz > phdr.p_filesz {
-            let bss_start = dst.add(phdr.p_filesz as usize);
-            let bss_size = (phdr.p_memsz - phdr.p_filesz) as usize;
-            ptr::write_bytes(bss_start, 0, bss_size);
+            // 清零 BSS
+            if phdr.p_memsz > phdr.p_filesz {
+                let bss_start = dst.add(phdr.p_filesz as usize);
+                let bss_size = (phdr.p_memsz - phdr.p_filesz) as usize;
+                ptr::write_bytes(bss_start, 0, bss_size);
+            }
         }
     }
 
@@ -258,13 +289,15 @@ unsafe fn load_elf(elf_data: *const u8, boot_services: &BootServices) -> Result<
 /// 调用者必须确保内核已正确加载，entry 是有效的入口地址
 #[inline(never)]
 unsafe fn jump_to_kernel(entry: u64, magic: u32, boot_info: u64) -> ! {
-    core::arch::asm!(
-        "mov eax, {magic:e}",
-        "mov rbx, {boot_info}",
-        "jmp {entry}",
-        magic = in(reg) magic,
-        boot_info = in(reg) boot_info,
-        entry = in(reg) entry,
-        options(noreturn)
-    );
+    unsafe {
+        core::arch::asm!(
+            "mov eax, {magic:e}",
+            "mov rbx, {boot_info}",
+            "jmp {entry}",
+            magic = in(reg) magic,
+            boot_info = in(reg) boot_info,
+            entry = in(reg) entry,
+            options(noreturn)
+        );
+    }
 }

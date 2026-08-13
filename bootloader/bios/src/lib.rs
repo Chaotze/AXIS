@@ -160,7 +160,7 @@ pub extern "C" fn stage2_rust() -> ! {
 /// 调用者必须确保 elf_start 指向有效的 ELF 文件
 unsafe fn load_kernel(elf_start: *const u8) -> Option<u64> {
     // 读取 ELF 文件头
-    let ehdr = &*(elf_start as *const Elf64Ehdr);
+    let ehdr = unsafe { &*(elf_start as *const Elf64Ehdr) };
 
     // 验证 ELF 魔数
     let magic = u32::from_le_bytes([
@@ -184,11 +184,11 @@ unsafe fn load_kernel(elf_start: *const u8) -> Option<u64> {
     let entry = ehdr.e_entry;
 
     // 遍历程序头表，加载所有 PT_LOAD 段
-    let phdr_base = elf_start.add(ehdr.e_phoff as usize) as *const Elf64Phdr;
+    let phdr_base = unsafe { elf_start.add(ehdr.e_phoff as usize) as *const Elf64Phdr };
     let phdr_count = ehdr.e_phnum as usize;
 
     for i in 0..phdr_count {
-        let phdr = &*phdr_base.add(i);
+        let phdr = unsafe { &*phdr_base.add(i) };
 
         // 只处理可加载段
         if phdr.p_type != PT_LOAD {
@@ -196,7 +196,7 @@ unsafe fn load_kernel(elf_start: *const u8) -> Option<u64> {
         }
 
         // 计算源地址和目标地址
-        let src = elf_start.add(phdr.p_offset as usize);
+        let src = unsafe { elf_start.add(phdr.p_offset as usize) };
         let dst = phdr.p_paddr as *mut u8;
         let filesz = phdr.p_filesz as usize;
         let memsz = phdr.p_memsz as usize;
@@ -205,7 +205,9 @@ unsafe fn load_kernel(elf_start: *const u8) -> Option<u64> {
         // 为什么使用 p_paddr 而不是 p_vaddr？
         //   - 引导阶段尚未建立完整的虚拟内存映射
         //   - 使用物理地址直接加载，内核启动后会自己设置虚拟内存
-        ptr::copy_nonoverlapping(src, dst, filesz);
+        unsafe {
+            ptr::copy_nonoverlapping(src, dst, filesz);
+        }
 
         // 清零 BSS 段（memsz > filesz 的部分）
         // 为什么需要清零？
@@ -213,9 +215,11 @@ unsafe fn load_kernel(elf_start: *const u8) -> Option<u64> {
         //   - C/Rust 标准要求未初始化的全局变量默认为 0
         //   - ELF 文件中不存储 BSS 内容（节省空间），由加载器负责清零
         if memsz > filesz {
-            let bss_start = dst.add(filesz);
+            let bss_start = unsafe { dst.add(filesz) };
             let bss_size = memsz - filesz;
-            ptr::write_bytes(bss_start, 0, bss_size);
+            unsafe {
+                ptr::write_bytes(bss_start, 0, bss_size);
+            }
         }
     }
 
@@ -236,15 +240,17 @@ unsafe fn jump_to_kernel(entry: u64, magic: u32, boot_info: u32) -> ! {
     // 为什么使用内联汇编？
     //   - Rust 无法直接表达跳转到任意地址
     //   - 需要精确控制寄存器状态（EAX、EBX）
-    core::arch::asm!(
-        "mov eax, {magic:e}",       // EAX = Multiboot2 魔数
-        "mov ebx, {boot_info:e}",   // EBX = 引导信息地址
-        "jmp {entry}",              // 跳转到内核入口
-        magic = in(reg) magic,
-        boot_info = in(reg) boot_info,
-        entry = in(reg) entry,
-        options(noreturn)           // 标记为不返回
-    );
+    unsafe {
+        core::arch::asm!(
+            "mov eax, {magic:e}",       // EAX = Multiboot2 魔数
+            "mov ebx, {boot_info:e}",   // EBX = 引导信息地址
+            "jmp {entry}",              // 跳转到内核入口
+            magic = in(reg) magic,
+            boot_info = in(reg) boot_info,
+            entry = in(reg) entry,
+            options(noreturn)           // 标记为不返回
+        );
+    }
 }
 
 // ============================================================
@@ -263,10 +269,10 @@ fn panic(info: &PanicInfo) -> ! {
         print(":");
         // 注意：这里省略了行号打印，因为需要实现数字到字符串的转换
     }
-    if let Some(message) = info.message() {
-        print(" - ");
-        // 注意：这里省略了消息打印，因为 message() 返回的类型不能直接打印
-    }
+    // if let Some(message) = info.message() {
+    //     print(" - ");
+    //     // 注意：这里省略了消息打印，因为 message() 返回的类型不能直接打印
+    // }
     print("\n");
 
     loop {}

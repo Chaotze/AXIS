@@ -10,7 +10,7 @@ use core::panic::PanicInfo;
 /// no_std 环境必须提供自定义的 panic 处理器
 /// 当内核发生 panic 时，会调用此函数
 #[panic_handler]
-fn panic(info: &PanicInfo) -> ! {
+fn panic(_info: &PanicInfo) -> ! {
     // 简单处理：打印 PANIC 并挂起
     // 实际实现应该输出更详细的调试信息
 

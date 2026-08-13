@@ -19,12 +19,15 @@ pub struct FramebufferInfo {
     pub height: u32,
 
     /// 每行字节数（stride/pitch）
+    #[allow(dead_code)]
     pub pitch: u32,
 
     /// 每像素位数
+    #[allow(dead_code)]
     pub bpp: u8,
 
     /// 像素格式
+    #[allow(dead_code)]
     pub pixel_format: PixelFormatType,
 }
 
@@ -47,7 +50,7 @@ pub enum PixelFormatType {
 /// - UEFI 固件通常在启动时已经设置了合适的图形模式
 /// - 主动设置可能会选择不兼容的模式，导致黑屏
 /// - 内核启动后可以根据需要切换模式
-pub fn init_graphics(boot_services: &BootServices) -> Result<FramebufferInfo> {
+pub fn init_graphics(boot_services: &uefi::table::boot::BootServices) -> uefi::Result<FramebufferInfo> {
     // 查找 GOP 协议句柄
     let gop_handle = boot_services
         .get_handle_for_protocol::<GraphicsOutput>()
@@ -60,7 +63,7 @@ pub fn init_graphics(boot_services: &BootServices) -> Result<FramebufferInfo> {
 
     // 获取当前模式信息
     let mode = gop.current_mode_info();
-    let framebuffer = gop.frame_buffer();
+    let mut framebuffer = gop.frame_buffer();
 
     // 转换像素格式
     let pixel_format = match mode.pixel_format() {

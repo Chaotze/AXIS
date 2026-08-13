@@ -3,13 +3,13 @@
 // ============================================================
 // 获取系统物理内存布局
 
-use uefi::prelude::*;
 use uefi::table::boot::{MemoryDescriptor, MemoryType};
 use uefi::mem::memory_map::MemoryMapOwned;
 
 /// 内存区域类型（与 common/boot_info.rs 保持一致）
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum MemoryRegionType {
     Usable = 1,
     Reserved = 2,
@@ -23,6 +23,7 @@ pub enum MemoryRegionType {
 
 /// 内存区域描述符
 #[derive(Debug, Clone, Copy)]
+#[allow(dead_code)]
 pub struct MemoryRegion {
     pub start: u64,
     pub len: u64,
@@ -39,7 +40,7 @@ pub struct MemoryRegion {
 /// - 等等
 ///
 /// 返回的内存映射会在 ExitBootServices 后继续有效
-pub fn get_memory_map(boot_services: &BootServices) -> Result<MemoryMapOwned> {
+pub fn get_memory_map(boot_services: &uefi::table::boot::BootServices) -> uefi::Result<MemoryMapOwned> {
     // 获取 UEFI 内存映射
     // 为什么需要 owned？
     //   - ExitBootServices 需要一个内存映射的 key
@@ -53,6 +54,7 @@ pub fn get_memory_map(boot_services: &BootServices) -> Result<MemoryMapOwned> {
 /// 将 UEFI 内存类型转换为 AXIS 内存区域类型
 ///
 /// UEFI 定义了多种内存类型，需要映射到 AXIS 的统一内存类型
+#[allow(dead_code)]
 pub fn convert_memory_type(uefi_type: MemoryType) -> MemoryRegionType {
     match uefi_type {
         // 可用内存
@@ -80,6 +82,7 @@ pub fn convert_memory_type(uefi_type: MemoryType) -> MemoryRegionType {
 }
 
 /// 将 UEFI 内存描述符转换为 AXIS 内存区域
+#[allow(dead_code)]
 pub fn convert_memory_descriptor(desc: &MemoryDescriptor) -> MemoryRegion {
     let start = desc.phys_start;
     let len = desc.page_count * 4096; // UEFI 页面大小固定为 4KB
