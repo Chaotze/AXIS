@@ -11,36 +11,113 @@
 ;
 ; 入口：32 位保护模式，CS=0x08, DS/ES/SS=0x10
 ; 出口：64 位长模式，跳转到 stage2_rust
+;
+; 调试增强：
+;   - 所有消息输出到串口（COM1, 0x3F8）
+;   - 在关键步骤打印寄存器值（CR0, CR4, EFER 等）
+;   - 函数：print_hex_32 / print_hex_64 用于十六进制输出
+;   - 函数：print_string_32 / print_string_64 输出字符串
+;   - 函数：serial_init / serial_write_char / serial_write_string
+; ============================================================
 
 [bits 32]               ; 32 位保护模式
 
-; 入口点（由 Stage1 跳转到这里）
+; ---------- 常量 ----------
+VGA_MEM          equ 0xB8000
+COM1_PORT        equ 0x3F8
+CR0_PG           equ 1 << 31
+CR4_PAE          equ 1 << 5
+EFER_LME         equ 1 << 8
+
+; ---------- 入口点 ----------
 global stage2_entry
 stage2_entry:
-    ; 打印消息（使用 VGA 文本模式）
-    mov esi, msg_stage2
+    ; 初始化串口
+    call serial_init
+
+    ; 打印开始消息（同时 VGA + 串口）
+    mov esi, msg_start
     call print_string_32
 
-    ; 检查 CPU 是否支持 CPUID
+    ; 检查 CPUID
     call check_cpuid
     test eax, eax
     jz .no_cpuid
+    mov esi, msg_cpuid_ok
+    call print_string_32
 
-    ; 检查 CPU 是否支持长模式
+    ; 检查长模式
     call check_long_mode
     test eax, eax
     jz .no_long_mode
+    mov esi, msg_long_mode_ok
+    call print_string_32
+
+    ; 打印 CR0, CR4 当前值
+    mov eax, cr0
+    mov esi, msg_cr0_before
+    call print_string_32
+    call print_hex_32
+    mov esi, newline
+    call print_string_32
+
+    mov eax, cr4
+    mov esi, msg_cr4_before
+    call print_string_32
+    call print_hex_32
+    mov esi, newline
+    call print_string_32
 
     ; 设置页表
+    mov esi, msg_setup_pagetables
+    call print_string_32
     call setup_page_tables
+    mov esi, msg_pagetables_done
+    call print_string_32
 
     ; 启用 PAE 和长模式
+    mov esi, msg_enable_paging
+    call print_string_32
     call enable_paging
+    mov esi, msg_paging_done
+    call print_string_32
+
+    ; 打印 CR0, CR4, EFER 新值
+    mov eax, cr0
+    mov esi, msg_cr0_after
+    call print_string_32
+    call print_hex_32
+    mov esi, newline
+    call print_string_32
+
+    mov eax, cr4
+    mov esi, msg_cr4_after
+    call print_string_32
+    call print_hex_32
+    mov esi, newline
+    call print_string_32
+
+    ; 读取 EFER
+    mov ecx, 0xC0000080
+    rdmsr
+    push eax
+    mov esi, msg_efer_after
+    call print_string_32
+    pop eax
+    call print_hex_32
+    mov esi, newline
+    call print_string_32
 
     ; 加载 64 位 GDT
+    mov esi, msg_load_gdt
+    call print_string_32
     lgdt [gdt64_descriptor]
+    mov esi, msg_gdt_loaded
+    call print_string_32
 
     ; 跳转到 64 位代码
+    mov esi, msg_jump_long
+    call print_string_32
     jmp 0x08:long_mode_entry
 
 .no_cpuid:
@@ -119,7 +196,7 @@ check_long_mode:
     ret
 
 ; ------------------------------------------------------------
-; 建立临时 4 级页表
+; 建立临时 4 级页表（标识映射低 2GB）
 ; ------------------------------------------------------------
 ; 长模式（64 位）使用 4 级页表：
 ;   - PML4（Page Map Level 4）：512 个条目，每个覆盖 512GB
@@ -191,7 +268,7 @@ setup_page_tables:
 enable_paging:
     ; 启用 PAE（CR4.PAE = 1）
     mov eax, cr4
-    or eax, 1 << 5          ; 设置位 5（PAE 位）
+    or eax, CR4_PAE         ; 设置位 5（PAE 位）
     mov cr4, eax
 
     ; 加载 PML4 基地址到 CR3
@@ -204,20 +281,20 @@ enable_paging:
     ; MSR 通过 RDMSR/WRMSR 指令访问
     mov ecx, 0xC0000080     ; EFER 的 MSR 地址
     rdmsr                   ; 读取到 EDX:EAX
-    or eax, 1 << 8          ; 设置位 8（LME = Long Mode Enable）
+    or eax, EFER_LME        ; 设置位 8（LME = Long Mode Enable）
     wrmsr                   ; 写回
 
     ; 启用分页（CR0.PG = 1）
     ; 设置 PG 位后，CPU 立即开始使用页表进行地址转换
     ; 同时，LME 位变为 LMA（Long Mode Active），CPU 进入长模式
     mov eax, cr0
-    or eax, 1 << 31         ; 设置位 31（PG 位）
+    or eax, CR0_PG          ; 设置位 31（PG 位）
     mov cr0, eax
 
     ret
 
 ; ------------------------------------------------------------
-; 32 位打印函数（VGA 文本模式）
+; 32 位打印函数（输出到串口）
 ; ------------------------------------------------------------
 ; VGA 文本模式内存映射：0xB8000
 ; 每个字符占用 2 字节：[字符, 属性]
@@ -226,17 +303,107 @@ enable_paging:
 ; ESI：字符串地址（以 null 结尾）
 print_string_32:
     pusha
-    mov edi, 0xb8000        ; VGA 文本缓冲区
+    mov edi, VGA_MEM        ; VGA 文本缓冲区
     mov ah, 0x0f            ; 属性：白色文本，黑色背景
 .loop:
     lodsb                   ; AL = [ESI], ESI++
     test al, al             ; 检查是否为 null
     jz .done
-
-    stosw                   ; [EDI] = AX, EDI += 2
+    ; VGA
+    ; stosw
+    ; 串口
+    push eax
+    call serial_write_char
+    pop eax
     jmp .loop
 .done:
+    ; 串口发送换行（可选，这里不自动加）
     popa
+    ret
+
+; ------------------------------------------------------------
+; 32 位十六进制打印（输出 EAX 的值，8 位十六进制）
+; ------------------------------------------------------------
+print_hex_32:
+    pusha
+    mov ecx, 8            ; 8 位十六进制
+    mov ebx, eax
+.next_digit:
+    rol ebx, 4
+    mov al, bl
+    and al, 0x0F
+    add al, '0'
+    cmp al, '9'
+    jbe .digit
+    add al, 'A' - '0' - 10
+.digit:
+    push ecx
+    mov esi, hex_buf
+    mov [esi], al
+    mov byte [esi+1], 0
+    call print_string_32
+    pop ecx
+    loop .next_digit
+    popa
+    ret
+
+hex_buf: db 0, 0         ; 临时缓冲区
+
+; ------------------------------------------------------------
+; 串口初始化（115200 bps, 8N1）
+; ------------------------------------------------------------
+serial_init:
+    pusha
+    ; 禁用中断
+    mov dx, COM1_PORT + 1
+    mov al, 0x00
+    out dx, al
+
+    ; 设置 DLAB = 1
+    mov dx, COM1_PORT + 3
+    mov al, 0x80
+    out dx, al
+
+    ; 设置波特率 115200 (除数 = 1)
+    mov dx, COM1_PORT
+    mov al, 0x01
+    out dx, al
+    mov dx, COM1_PORT + 1
+    mov al, 0x00
+    out dx, al
+
+    ; 清除 DLAB，设置 8N1
+    mov dx, COM1_PORT + 3
+    mov al, 0x03
+    out dx, al
+
+    ; 启用 FIFO，清空
+    mov dx, COM1_PORT + 2
+    mov al, 0xC7
+    out dx, al
+
+    ; 设置 RTS/DTR
+    mov dx, COM1_PORT + 4
+    mov al, 0x0B
+    out dx, al
+    popa
+    ret
+
+; ------------------------------------------------------------
+; 串口写字符（等待发送缓冲区空）
+; ------------------------------------------------------------
+serial_write_char:
+    push dx
+    push ax
+    mov dx, COM1_PORT + 5
+.wait:
+    in al, dx
+    test al, 0x20         ; 发送保持寄存器空？
+    jz .wait
+    mov dx, COM1_PORT
+    pop ax
+    out dx, al
+    pop dx
     ret
 
 ; ------------------------------------------------------------
@@ -258,13 +425,105 @@ long_mode_entry:
     ; 设置 64 位堆栈
     mov rsp, 0x200000       ; 使用 2MB 地址作为堆栈基址
 
+    ; 64 位打印：进入长模式
+    mov rsi, msg_long_mode_enter
+    call print_string_64
+
+    ; 打印 RSP 和 RIP（调试）
+    mov rsi, msg_rsp
+    call print_string_64
+    mov rax, rsp
+    call print_hex_64
+    mov rsi, newline
+    call print_string_64
+
     ; 调用 Rust Stage2
     ; Rust 代码编译为 extern "C" 函数，遵循 System V AMD64 ABI
     extern stage2_rust
+    mov rsi, msg_call_rust
+    call print_string_64
     call stage2_rust
 
-    ; 如果返回（不应该发生），挂起
+    ; 如果返回，挂起
+    mov rsi, msg_returned
+    call print_string_64
     jmp $
+
+; ------------------------------------------------------------
+; 64 位打印函数（输出到串口）
+; ------------------------------------------------------------
+print_string_64:
+    push rax
+    push rdi
+    push rsi
+    push rdx
+    mov rdi, VGA_MEM
+    mov ah, 0x0f
+.loop:
+    lodsb
+    test al, al
+    jz .done
+    ; VGA
+    ; stosw
+    ; 串口（使用 32 位兼容调用）
+    push rax
+    call serial_write_char_64
+    pop rax
+    jmp .loop
+.done:
+    pop rdx
+    pop rsi
+    pop rdi
+    pop rax
+    ret
+
+; 64 位串口写字符（包装 32 位版本）
+serial_write_char_64:
+    ; 由于 in/out 在 64 位下仍可用，但需要 rax 低 8 位
+    push rdx
+    push rax
+    mov dx, COM1_PORT + 5
+.wait:
+    in al, dx
+    test al, 0x20
+    jz .wait
+    mov dx, COM1_PORT
+    pop rax
+    out dx, al
+    pop rdx
+    ret
+
+; ------------------------------------------------------------
+; 64 位十六进制打印（输出 RAX 的值，16 位十六进制）
+; ------------------------------------------------------------
+print_hex_64:
+    push rax
+    push rcx
+    push rbx
+    push rsi
+    mov rcx, 16
+    mov rbx, rax
+.next:
+    rol rbx, 4
+    mov al, bl
+    and al, 0x0F
+    add al, '0'
+    cmp al, '9'
+    jbe .digit
+    add al, 'A' - '0' - 10
+.digit:
+    push rcx
+    lea rsi, [hex_buf]
+    mov byte [rsi], al
+    mov byte [rsi+1], 0
+    call print_string_64
+    pop rcx
+    loop .next
+    pop rsi
+    pop rbx
+    pop rcx
+    pop rax
+    ret
 
 ; ------------------------------------------------------------
 ; 64 位 GDT
@@ -301,6 +560,25 @@ gdt64_descriptor:
 ; ------------------------------------------------------------
 ; 数据区
 ; ------------------------------------------------------------
-msg_stage2:         db "Stage2: Entering Long Mode...", 0
-msg_no_cpuid:       db "ERROR: CPUID not supported", 0
-msg_no_long_mode:   db "ERROR: Long mode not supported", 0
+msg_start:              db "Stage2: Starting...", 0
+msg_cpuid_ok:           db "  CPUID supported.", 0
+msg_long_mode_ok:       db "  Long mode supported.", 0
+msg_no_cpuid:           db "ERROR: CPUID not supported", 0
+msg_no_long_mode:       db "ERROR: Long mode not supported", 0
+msg_cr0_before:         db "  CR0 before: 0x", 0
+msg_cr4_before:         db "  CR4 before: 0x", 0
+msg_setup_pagetables:   db "  Setting up page tables...", 0
+msg_pagetables_done:    db "  Page tables set up.", 0
+msg_enable_paging:      db "  Enabling paging and long mode...", 0
+msg_paging_done:        db "  Paging enabled, long mode active.", 0
+msg_cr0_after:          db "  CR0 after:  0x", 0
+msg_cr4_after:          db "  CR4 after:  0x", 0
+msg_efer_after:         db "  EFER after: 0x", 0
+msg_load_gdt:           db "  Loading 64-bit GDT...", 0
+msg_gdt_loaded:         db "  GDT loaded.", 0
+msg_jump_long:          db "  Jumping to 64-bit code...", 0
+msg_long_mode_enter:    db "Long Mode: Entered successfully!", 0
+msg_rsp:                db "  RSP = 0x", 0
+msg_call_rust:          db "  Calling Rust stage2...", 0
+msg_returned:           db "  Rust returned (should not happen), halting.", 0
+newline:                db 0x0D, 0x0A, 0   ; CR + LF
