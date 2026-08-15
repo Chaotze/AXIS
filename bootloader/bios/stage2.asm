@@ -442,6 +442,8 @@ long_mode_entry:
     extern stage2_rust
     mov rsi, msg_call_rust
     call print_string_64
+    mov rsi, newline
+    call print_string_64
     call stage2_rust
 
     ; 如果返回，挂起
@@ -513,7 +515,7 @@ print_hex_64:
     add al, 'A' - '0' - 10
 .digit:
     push rcx
-    lea rsi, [hex_buf]
+    lea rsi, [rel hex_buf]
     mov byte [rsi], al
     mov byte [rsi+1], 0
     call print_string_64

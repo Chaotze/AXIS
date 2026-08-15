@@ -12,8 +12,8 @@
 #![no_std]
 #![no_main]
 
-use core::panic::PanicInfo;
-use core::ptr;
+/// 加载内核每个连续块的字节数
+const BLOCK_SIZE: usize = 1024;
 
 // ============================================================
 // ELF 文件格式定义
@@ -152,8 +152,28 @@ unsafe fn load_kernel(elf_start: *const u8) -> Option<u64> {
         // 为什么使用 p_paddr 而不是 p_vaddr？
         //   - 引导阶段尚未建立完整的虚拟内存映射
         //   - 使用物理地址直接加载，内核启动后会自己设置虚拟内存
-        unsafe {
-            ptr::copy_nonoverlapping(src, dst, filesz);
+        let mut offset = 0;
+        while offset + BLOCK_SIZE <= filesz {
+            unsafe {
+                // 使用 rep movsb 拷贝一个块
+                core::arch::asm!(
+                    "rep movsb",
+                    in("rdi") dst.add(offset),
+                    in("rsi") src.add(offset),
+                    in("rcx") BLOCK_SIZE,
+                    options(nostack)
+                );
+            }
+            offset += BLOCK_SIZE;
+        }
+
+        // 剩余字节（< BLOCK_SIZE）用 volatile 逐字节处理
+        let remaining = filesz - offset;
+        for i in 0..remaining {
+            unsafe {
+                let byte = core::ptr::read_volatile(src.add(offset + i));
+                core::ptr::write_volatile(dst.add(offset + i), byte);
+            }
         }
 
         // 清零 BSS 段（memsz > filesz 的部分）
@@ -162,8 +182,27 @@ unsafe fn load_kernel(elf_start: *const u8) -> Option<u64> {
         //   - C/Rust 标准要求未初始化的全局变量默认为 0
         //   - ELF 文件中不存储 BSS 内容（节省空间），由加载器负责清零
         if memsz > filesz {
-            unsafe {
-                ptr::write_bytes(dst.add(filesz), 0, memsz - filesz);
+            let bss_len = memsz - filesz;
+            let bss_start = filesz;
+            offset = 0;
+            while offset + BLOCK_SIZE <= bss_len {
+                unsafe {
+                    // 用 rep stosb 快速清零
+                    core::arch::asm!(
+                        "rep stosb",
+                        in("rdi") dst.add(bss_start + offset),
+                        in("al") 0u8,
+                        in("rcx") BLOCK_SIZE,
+                        options(nostack)
+                    );
+                }
+                offset += BLOCK_SIZE;
+            }
+            // 剩余字节逐字节清零
+            for i in 0..(bss_len - offset) {
+                unsafe {
+                    core::ptr::write_volatile(dst.add(bss_start + offset + i), 0);
+                }
             }
         }
     }
@@ -186,7 +225,7 @@ fn jump_to_kernel(entry: u64, magic: u32, boot_info: u32) -> ! {
     //   - Rust 无法直接表达跳转到任意地址
     //   - 需要精确控制寄存器状态（EAX、EBX）
     unsafe {
-        // let vga = 0xB800a as *mut u16;
+        // let vga = 0xB8000 as *mut u16;
         // *vga.offset(0) = 0x0f41; // 显示 'A'
         core::arch::asm!(
             "mov eax, {magic:e}",       // EAX = Multiboot2 魔数
@@ -272,7 +311,7 @@ pub fn serial_print_hex_64(val: u64) {
 ///
 /// no_std 环境需要自定义 panic 处理
 #[panic_handler]
-fn panic(info: &PanicInfo) -> ! {
+fn panic(info: &core::panic::PanicInfo) -> ! {
     serial_print("PANIC: ");
     if let Some(location) = info.location() {
         serial_print("at ");

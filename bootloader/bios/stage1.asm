@@ -76,16 +76,6 @@ load_stage2:
     int 0x13                ; 调用 BIOS 磁盘服务
     jc disk_error           ; CF=1 表示错误
 
-    mov ah, 0x02
-    mov al, 128             ; 再读 128 个扇区（64KB）
-    mov ch, 3
-    mov cl, 1
-    mov dh, 4
-    mov dl, [boot_drive]
-    mov bx, 0x9e00
-    int 0x13
-    jc disk_error
-
     ; 读取内核到 0x10000（LBA 模式，扩展 INT 13H）
     mov si, disk_address_packet_kernel
     mov ah, 0x42
@@ -233,7 +223,7 @@ disk_address_packet_kernel:
     dw 0x0020               ; 要读取的扇区数（32个扇区 = 16KB）
     dw 0x0000               ; 目标地址偏移量（16位）
     dw 0x1000               ; 目标地址段（0x1000:0x0000 = 0x10000）
-    dq 256                  ; LBA 起始扇区
+    dq 128                  ; LBA 起始扇区
 
 ; ------------------------------------------------------------
 ; 引导扇区签名
