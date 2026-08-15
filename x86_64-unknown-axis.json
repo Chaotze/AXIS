@@ -6,9 +6,11 @@
     "target-pointer-width": 64,
     "target-c-int-width": 32,
     "os": "none",
+    "executables": true,
     "linker-flavor": "ld.lld",
     "linker": "rust-lld",
-    "executables": true,
+    "panic-strategy": "abort",
     "disable-redzone": true,
-    "panic-strategy": "abort"
+    "code-model": "kernel",
+    "relocation-model": "static"
 }

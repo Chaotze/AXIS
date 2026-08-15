@@ -1,0 +1,329 @@
+// ============================================================
+// BIOS Stage2 Rust 实现
+// ============================================================
+// 负责加载内核 ELF 文件并跳转到内核入口
+//
+// 功能：
+//   1. 简单的 ELF 解析器
+//   2. 加载内核段到内存
+//   3. 构建 Multiboot2 引导信息
+//   4. 跳转到内核入口
+
+#![no_std]
+#![no_main]
+
+/// 加载内核每个连续块的字节数
+const BLOCK_SIZE: usize = 1024;
+
+// ============================================================
+// ELF 文件格式定义
+// ============================================================
+
+/// ELF 魔数：0x7F 'E' 'L' 'F'
+const ELF_MAGIC: u32 = 0x464c457f;
+
+/// ELF 类型：64 位
+const ELFCLASS64: u8 = 2;
+
+/// ELF 数据编码：小端序
+const ELFDATA2LSB: u8 = 1;
+
+/// ELF 程序段类型：可加载段
+const PT_LOAD: u32 = 1;
+
+// ============================================================
+// ELF 结构体定义
+// ============================================================
+
+#[repr(C)]
+struct Elf64Ehdr {
+    e_ident: [u8; 16], // ELF 标识符
+    e_type: u16,       // 文件类型
+    e_machine: u16,    // 目标机器架构
+    e_version: u32,    // ELF 版本
+    e_entry: u64,      // 入口点地址
+    e_phoff: u64,      // 程序头表偏移
+    e_shoff: u64,      // 节头表偏移
+    e_flags: u32,      // 处理器特定标志
+    e_ehsize: u16,     // ELF 文件头大小
+    e_phentsize: u16,  // 程序头表项大小
+    e_phnum: u16,      // 程序头表项数量
+    e_shentsize: u16,  // 节头表项大小
+    e_shnum: u16,      // 节头表项数量
+    e_shstrndx: u16,   // 节名字符串表索引
+}
+
+/// ELF 程序头（64 位）
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Elf64Phdr {
+    p_type: u32,   // 段类型
+    p_flags: u32,  // 段标志
+    p_offset: u64, // 段在文件中的偏移
+    p_vaddr: u64,  // 段的虚拟地址
+    p_paddr: u64,  // 段的物理地址
+    p_filesz: u64, // 段在文件中的大小
+    p_memsz: u64,  // 段在内存中的大小
+    p_align: u64,  // 段对齐
+}
+
+// ============================================================
+// Stage2 主函数
+// ============================================================
+
+/// Stage2 Rust 入口点
+///
+/// 由 stage2.asm 的 long_mode_entry 调用
+/// 此时 CPU 已处于 64 位长模式
+#[unsafe(no_mangle)]
+pub extern "C" fn stage2_rust() -> ! {
+    serial_print("Stage2 Rust: Loading kernel...\n");
+
+    // 假设内核 ELF 文件紧随 Stage2 之后
+    // 实际实现中，应该从磁盘读取内核
+    // 这里为了简化，假设内核已经被预加载到 0x10000
+    let kernel_start = 0x10000 as *const u8;
+
+    // 解析并加载内核
+    let entry_point = unsafe {
+        match load_kernel(kernel_start) {
+            Some(entry) => entry,
+            None => {
+                serial_print("ERROR: Failed to load kernel\n");
+                loop {}
+            }
+        }
+    };
+
+    serial_print("Stage2 Rust: Jumping to kernel...\n");
+
+    // 跳转到内核入口
+    // 传递 Multiboot2 魔数和引导信息地址
+    jump_to_kernel(entry_point, 0x36d76289, 0);
+}
+
+/// 加载内核 ELF 文件
+///
+/// 解析 ELF 头，加载所有 PT_LOAD 段到内存
+///
+/// # Safety
+/// 调用者必须确保 elf_start 指向有效的 ELF 文件
+unsafe fn load_kernel(elf_start: *const u8) -> Option<u64> {
+    // 读取 ELF 文件头
+    let ehdr = unsafe { &*(elf_start as *const Elf64Ehdr) };
+
+    // 验证 ELF 魔数
+    let magic = u32::from_le_bytes([
+        ehdr.e_ident[0],
+        ehdr.e_ident[1],
+        ehdr.e_ident[2],
+        ehdr.e_ident[3],
+    ]);
+    if magic != ELF_MAGIC {
+        serial_print("ERROR: Invalid ELF magic\n");
+        return None;
+    }
+
+    // 验证 ELF 类型（64 位，小端序）
+    if ehdr.e_ident[4] != ELFCLASS64 || ehdr.e_ident[5] != ELFDATA2LSB {
+        serial_print("ERROR: Not a 64-bit little-endian ELF\n");
+        return None;
+    }
+
+    // 遍历程序头表，加载所有 PT_LOAD 段
+    let phdr_base = unsafe { elf_start.add(ehdr.e_phoff as usize) as *const Elf64Phdr };
+    let phdr_count = ehdr.e_phnum as usize;
+
+    for i in 0..phdr_count {
+        let phdr = unsafe { &*phdr_base.add(i) };
+
+        // 只处理可加载段
+        if phdr.p_type != PT_LOAD {
+            continue;
+        }
+
+        // 计算源地址和目标地址
+        let src = unsafe { elf_start.add(phdr.p_offset as usize) };
+        let dst = phdr.p_paddr as *mut u8;
+        let filesz = phdr.p_filesz as usize;
+        let memsz = phdr.p_memsz as usize;
+
+        // 复制文件内容到目标地址
+        // 为什么使用 p_paddr 而不是 p_vaddr？
+        //   - 引导阶段尚未建立完整的虚拟内存映射
+        //   - 使用物理地址直接加载，内核启动后会自己设置虚拟内存
+        let mut offset = 0;
+        while offset + BLOCK_SIZE <= filesz {
+            unsafe {
+                // 使用 rep movsb 拷贝一个块
+                core::arch::asm!(
+                    "rep movsb",
+                    in("rdi") dst.add(offset),
+                    in("rsi") src.add(offset),
+                    in("rcx") BLOCK_SIZE,
+                    options(nostack)
+                );
+            }
+            offset += BLOCK_SIZE;
+        }
+
+        // 剩余字节（< BLOCK_SIZE）用 volatile 逐字节处理
+        let remaining = filesz - offset;
+        for i in 0..remaining {
+            unsafe {
+                let byte = core::ptr::read_volatile(src.add(offset + i));
+                core::ptr::write_volatile(dst.add(offset + i), byte);
+            }
+        }
+
+        // 清零 BSS 段（memsz > filesz 的部分）
+        // 为什么需要清零？
+        //   - BSS 段存储未初始化的全局变量
+        //   - C/Rust 标准要求未初始化的全局变量默认为 0
+        //   - ELF 文件中不存储 BSS 内容（节省空间），由加载器负责清零
+        if memsz > filesz {
+            let bss_len = memsz - filesz;
+            let bss_start = filesz;
+            offset = 0;
+            while offset + BLOCK_SIZE <= bss_len {
+                unsafe {
+                    // 用 rep stosb 快速清零
+                    core::arch::asm!(
+                        "rep stosb",
+                        in("rdi") dst.add(bss_start + offset),
+                        in("al") 0u8,
+                        in("rcx") BLOCK_SIZE,
+                        options(nostack)
+                    );
+                }
+                offset += BLOCK_SIZE;
+            }
+            // 剩余字节逐字节清零
+            for i in 0..(bss_len - offset) {
+                unsafe {
+                    core::ptr::write_volatile(dst.add(bss_start + offset + i), 0);
+                }
+            }
+        }
+    }
+
+    Some(ehdr.e_entry)
+}
+
+/// 跳转到内核入口
+///
+/// 遵循 Multiboot2 协议：
+///   - EAX = Multiboot2 魔数（0x36d76289）
+///   - EBX = 引导信息结构地址
+///
+/// # Safety
+/// 调用者必须确保 entry 是有效的内核入口地址
+#[inline(never)]
+fn jump_to_kernel(entry: u64, magic: u32, boot_info: u32) -> ! {
+    // 使用内联汇编跳转到内核
+    // 为什么使用内联汇编？
+    //   - Rust 无法直接表达跳转到任意地址
+    //   - 需要精确控制寄存器状态（EAX、EBX）
+    unsafe {
+        // let vga = 0xB8000 as *mut u16;
+        // *vga.offset(0) = 0x0f41; // 显示 'A'
+        core::arch::asm!(
+            "mov eax, {magic:e}",       // EAX = Multiboot2 魔数
+            "mov ebx, {boot_info:e}",   // EBX = 引导信息地址
+            // "mov word ptr [0xB8000 + 2], 0x074C", // 显示 'L'
+            "jmp {entry}",              // 跳转到内核入口
+            magic = in(reg) magic,
+            boot_info = in(reg) boot_info,
+            entry = in(reg) entry,
+            options(noreturn)           // 标记为不返回
+        );
+    }
+}
+
+// ============================================================
+// 串口输出
+// ============================================================
+
+const COM1: u16 = 0x3F8;
+
+fn serial_ready() -> bool {
+    (inb(COM1 + 5) & 0x20) != 0
+}
+
+fn inb(port: u16) -> u8 {
+    let result: u8;
+    unsafe { core::arch::asm!("in al, dx", out("al") result, in("dx") port) };
+    result
+}
+
+fn outb(port: u16, value: u8) {
+    unsafe { core::arch::asm!("out dx, al", in("dx") port, in("al") value) };
+}
+
+fn serial_putc(c: u8) {
+    while !serial_ready() {
+        core::hint::spin_loop();
+    }
+    outb(COM1, c);
+}
+
+/// 输出字符串
+fn serial_print(s: &str) {
+    for &b in s.as_bytes() {
+        if b == b'\n' {
+            serial_putc(b'\r');
+        }
+        serial_putc(b);
+    }
+}
+
+/// 以十进制输出数字（0-255）
+pub fn serial_print_num(mut num: u8) {
+    if num >= 100 {
+        serial_putc(b'0' + num / 100);
+        num %= 100;
+    }
+    if num >= 10 {
+        serial_putc(b'0' + num / 10);
+        num %= 10;
+    }
+    serial_putc(b'0' + num);
+}
+
+/// 以十六进制输出进制数字
+pub fn serial_print_hex_64(val: u64) {
+    for i in (0..16).rev() {
+        let nibble = ((val >> (i * 4)) & 0xF) as u8;
+        let ch = if nibble < 10 {
+            b'0' + nibble
+        } else {
+            b'a' + (nibble - 10)
+        };
+        serial_putc(ch);
+    }
+}
+
+// ============================================================
+// Panic 处理器
+// ============================================================
+
+/// Panic 处理器
+///
+/// no_std 环境需要自定义 panic 处理
+#[panic_handler]
+fn panic(info: &core::panic::PanicInfo) -> ! {
+    serial_print("PANIC: ");
+    if let Some(location) = info.location() {
+        serial_print("at ");
+        serial_print(location.file());
+        serial_print(":");
+        // 注意：这里省略了行号打印，因为需要实现数字到字符串的转换
+    }
+    // if let Some(message) = info.message() {
+    //     print(" - ");
+    //     // 注意：这里省略了消息打印，因为 message() 返回的类型不能直接打印
+    // }
+    serial_print("\n");
+
+    loop {}
+}

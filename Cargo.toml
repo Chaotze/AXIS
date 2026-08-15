@@ -12,7 +12,7 @@
 # 这些目录必须包含 Cargo.toml 文件，且位于工作区根目录下
 # 工作区还支持隐式成员：如果根目录下有子目录包含 Cargo.toml，
 # 且没有被显式列出，可以使用 "members = ["*"]" 自动发现
-members = ["bootloader", "kernel"]
+members = ["bootloader/bios", "bootloader/uefi", "kernel"]
 
 # resolver: 依赖解析器版本
 # 解析器版本的区别：
@@ -100,8 +100,8 @@ panic = "abort"
 #   - 特别适合对体积敏感的裸机环境
 lto = true
 
-# opt-level = 2: 优化级别
-# 
+# opt-level: 优化级别
+#
 # 可选值：
 #   - 0: 无优化（快速编译，适合开发）
 #   - 1: 基础优化（平衡编译速度和运行性能）
@@ -109,12 +109,18 @@ lto = true
 #   - 3: 最高优化（可能增加二进制体积）
 #   - "s": 优化二进制体积（size，推荐嵌入式）
 #   - "z": 最大化减少体积（比 s 更激进）
-# 
+#
 # 可能的调整：
 #   - 如果内核体积超过限制，考虑使用 opt-level = "s"
 #   - 如果需要极致的性能（如实时系统），考虑 opt-level = 3
 #   - 可以单独对某些关键 crate 设置不同的优化级别
 opt-level = 2
+
+# codegen-units = 1: 单个代码生成单元，更好的优化
+codegen-units = 1
+
+# strip = true: 去除符号表和调试信息
+strip = true
 
 # ============================================================
 # 补充说明：

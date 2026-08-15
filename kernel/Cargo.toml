@@ -1,5 +1,5 @@
 [package]
-name = "kernel"
+name = "axis-kernel"
 authors.workspace = true
 version.workspace = true
 edition.workspace = true
