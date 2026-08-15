@@ -4,7 +4,6 @@ AXIS/
 ├── bootloader/                                 # 引导加载程序 (固件和内核之间的桥梁)
 │   ├── bios/                                   # BIOS 传统引导模式
 │   │   ├── Cargo.toml
-│   │   ├── Cargo.lock
 │   │   ├── stage1.asm                          # 第一阶段引导 (MBR, 16 位实模式, 512 字节)
 │   │   ├── stage2.asm                          # 第二阶段引导 (32 位保护模式启用)
 │   │   ├── stage2.ld                           # Stage2 链接脚本
@@ -13,8 +12,6 @@ AXIS/
 │   │
 │   ├── uefi/                                   # UEFI 现代引导模式 (UEFI 固件下运行)
 │   │   ├── Cargo.toml
-│   │   ├── Cargo.lock
-│   │   ├── build.rs                            # 构建脚本
 │   │   └── src/
 │   │       ├── main.rs                         # UEFI 主入口
 │   │       ├── graphics.rs                     # UEFI 图形初始化

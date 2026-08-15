@@ -42,7 +42,25 @@ AXIS 是一个用 Rust 编写的宏内核，稳定、直接、忠实地执行每
 
 ## 如何开始
 
-...（待完善）
+1. 安装以下构建工具，并配置好相应环境变量：
+
+   - Rust Nightly 构建工具链 2026-08-10（或更新版本）
+   - NASM 3.02（或更新版本）
+   - Rust-lld，它通常位于 Rustup 的工具链目录下，例如
+
+      ```
+      ~/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu/lib/rustlib/x86_64-unknown-linux-gnu/bin/rust-lld
+      ```
+
+      请将其父文件夹添加到环境变量
+
+   - QEMU emulator 11.1.0（或更新版本）
+
+2. 使用构建系统（支持 Windows PowerShell 和 Linux），查看帮助命令：
+
+   ```
+   ./axis help
+   ```
 
 <br>
 
