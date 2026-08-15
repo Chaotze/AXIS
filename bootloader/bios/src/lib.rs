@@ -77,7 +77,7 @@ struct Elf64Phdr {
 /// 此时 CPU 已处于 64 位长模式
 #[unsafe(no_mangle)]
 pub extern "C" fn stage2_rust() -> ! {
-    serial_print("Stage2 Rust: Loading kernel...\n");
+    print("Stage2 Rust: Loading kernel...\n");
 
     // 假设内核 ELF 文件紧随 Stage2 之后
     // 实际实现中，应该从磁盘读取内核
@@ -89,13 +89,13 @@ pub extern "C" fn stage2_rust() -> ! {
         match load_kernel(kernel_start) {
             Some(entry) => entry,
             None => {
-                serial_print("ERROR: Failed to load kernel\n");
+                print("ERROR: Failed to load kernel\n");
                 loop {}
             }
         }
     };
 
-    serial_print("Stage2 Rust: Jumping to kernel...\n");
+    print("Stage2 Rust: Jumping to kernel...\n");
 
     // 跳转到内核入口
     // 传递 Multiboot2 魔数和引导信息地址
@@ -120,13 +120,13 @@ unsafe fn load_kernel(elf_start: *const u8) -> Option<u64> {
         ehdr.e_ident[3],
     ]);
     if magic != ELF_MAGIC {
-        serial_print("ERROR: Invalid ELF magic\n");
+        print("ERROR: Invalid ELF magic\n");
         return None;
     }
 
     // 验证 ELF 类型（64 位，小端序）
     if ehdr.e_ident[4] != ELFCLASS64 || ehdr.e_ident[5] != ELFDATA2LSB {
-        serial_print("ERROR: Not a 64-bit little-endian ELF\n");
+        print("ERROR: Not a 64-bit little-endian ELF\n");
         return None;
     }
 
@@ -241,65 +241,53 @@ fn jump_to_kernel(entry: u64, magic: u32, boot_info: u32) -> ! {
 }
 
 // ============================================================
-// 串口输出
+// VGA 文本模式输出
 // ============================================================
 
-const COM1: u16 = 0x3F8;
+/// VGA 文本缓冲区地址
+const VGA_BUFFER: *mut u16 = 0xb8000 as *mut u16;
 
-fn serial_ready() -> bool {
-    (inb(COM1 + 5) & 0x20) != 0
-}
+/// VGA 文本模式列数
+const VGA_WIDTH: usize = 80;
 
-fn inb(port: u16) -> u8 {
-    let result: u8;
-    unsafe { core::arch::asm!("in al, dx", out("al") result, in("dx") port) };
-    result
-}
+/// VGA 文本模式行数
+const VGA_HEIGHT: usize = 25;
 
-fn outb(port: u16, value: u8) {
-    unsafe { core::arch::asm!("out dx, al", in("dx") port, in("al") value) };
-}
+/// 当前光标位置
+static mut VGA_COLUMN: usize = 0;
+static mut VGA_ROW: usize = 0;
 
-fn serial_putc(c: u8) {
-    while !serial_ready() {
-        core::hint::spin_loop();
-    }
-    outb(COM1, c);
-}
+/// 打印字符串
+///
+/// 简单的 VGA 文本模式输出，用于调试信息
+fn print(s: &str) {
+    for byte in s.bytes() {
+        unsafe {
+            match byte {
+                b'\n' => {
+                    VGA_COLUMN = 0;
+                    VGA_ROW += 1;
+                    if VGA_ROW >= VGA_HEIGHT {
+                        VGA_ROW = VGA_HEIGHT - 1;
+                        // 简单处理：停在最后一行（不滚动）
+                    }
+                }
+                byte => {
+                    if VGA_COLUMN >= VGA_WIDTH {
+                        VGA_COLUMN = 0;
+                        VGA_ROW += 1;
+                        if VGA_ROW >= VGA_HEIGHT {
+                            VGA_ROW = VGA_HEIGHT - 1;
+                        }
+                    }
 
-/// 输出字符串
-fn serial_print(s: &str) {
-    for &b in s.as_bytes() {
-        if b == b'\n' {
-            serial_putc(b'\r');
+                    let pos = VGA_ROW * VGA_WIDTH + VGA_COLUMN;
+                    let color = 0x0700; // 白色文本，黑色背景
+                    VGA_BUFFER.add(pos).write_volatile(color | byte as u16);
+                    VGA_COLUMN += 1;
+                }
+            }
         }
-        serial_putc(b);
-    }
-}
-
-/// 以十进制输出数字（0-255）
-pub fn serial_print_num(mut num: u8) {
-    if num >= 100 {
-        serial_putc(b'0' + num / 100);
-        num %= 100;
-    }
-    if num >= 10 {
-        serial_putc(b'0' + num / 10);
-        num %= 10;
-    }
-    serial_putc(b'0' + num);
-}
-
-/// 以十六进制输出进制数字
-pub fn serial_print_hex_64(val: u64) {
-    for i in (0..16).rev() {
-        let nibble = ((val >> (i * 4)) & 0xF) as u8;
-        let ch = if nibble < 10 {
-            b'0' + nibble
-        } else {
-            b'a' + (nibble - 10)
-        };
-        serial_putc(ch);
     }
 }
 
@@ -312,18 +300,18 @@ pub fn serial_print_hex_64(val: u64) {
 /// no_std 环境需要自定义 panic 处理
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-    serial_print("PANIC: ");
+    print("PANIC: ");
     if let Some(location) = info.location() {
-        serial_print("at ");
-        serial_print(location.file());
-        serial_print(":");
+        print("at ");
+        print(location.file());
+        print(":");
         // 注意：这里省略了行号打印，因为需要实现数字到字符串的转换
     }
     // if let Some(message) = info.message() {
     //     print(" - ");
     //     // 注意：这里省略了消息打印，因为 message() 返回的类型不能直接打印
     // }
-    serial_print("\n");
+    print("\n");
 
     loop {}
 }

@@ -29,6 +29,7 @@ pub extern "C" fn _start() -> ! {
     }
 
     // 使用 VGA 文本模式输出欢迎信息
+    clear();
     print_string(b"AXIS: AXIS eXecute Instructions Steadily\n");
     print_string(b"Kernel loaded successfully!\n");
 
@@ -70,10 +71,26 @@ fn print_string(s: &[u8]) {
                     }
 
                     let pos = ROW * WIDTH + COLUMN;
-                    let color = 0x0f00; // 白色文本，黑色背景
+                    let color = 0x0700; // 白色文本，黑色背景
                     VGA_BUFFER.add(pos).write_volatile(color | byte as u16);
                     COLUMN += 1;
                 }
+            }
+        }
+    }
+}
+
+fn clear() {
+    const VGA_BUFFER: *mut u16 = 0xb8000 as *mut u16;
+    const WIDTH: usize = 80;
+    const HEIGHT: usize = 25;
+    unsafe {
+        for y in 0..HEIGHT {
+            for x in 0..WIDTH {
+                let byte = b' ';
+                let pos = y * WIDTH + x;
+                let color = 0x0700; // 白色文本，黑色背景
+                VGA_BUFFER.add(pos).write_volatile(color | byte as u16);
             }
         }
     }
