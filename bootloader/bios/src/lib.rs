@@ -276,7 +276,7 @@ fn print(s: &str) {
                     }
 
                     let pos = VGA_ROW * VGA_WIDTH + VGA_COLUMN;
-                    let color = 0x0700; // 白色文本，黑色背景
+                    let color = 0; // 默认颜色，等同于白色文本黑色背景（0x0700）
                     VGA_BUFFER.add(pos).write_volatile(color | byte as u16);
                     VGA_COLUMN += 1;
                 }
