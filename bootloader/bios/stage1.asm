@@ -220,7 +220,7 @@ msg_disk_error: db "Stage1: Disk read error!", 13, 10, 0
 disk_address_packet_kernel:
     db 0x10                 ; 包大小（16字节）
     db 0                    ; 保留（必须为0）
-    dw 0x0020               ; 要读取的扇区数（32个扇区 = 16KB）
+    dw 0x0080               ; 要读取的扇区数（128个扇区 = 64KB）
     dw 0x0000               ; 目标地址偏移量（16位）
     dw 0x1000               ; 目标地址段（0x1000:0x0000 = 0x10000）
     dq 128                  ; LBA 起始扇区
