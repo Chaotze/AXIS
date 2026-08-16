@@ -12,22 +12,8 @@ use core::arch::asm;
 /// 内核入口点
 ///
 /// 由引导加载程序跳转到此函数
-/// 按照 Multiboot2 协议：
-///   - EAX = 0x36d76289（Multiboot2 魔数）
-///   - EBX = 引导信息结构地址
 #[unsafe(no_mangle)]
 pub extern "C" fn _start() -> ! {
-    // 验证 Multiboot2 魔数
-    let magic: u32;
-    unsafe {
-        asm!("mov {0:e}, eax", out(reg) magic);
-    }
-
-    if magic != 0x36d76289 {
-        // 魔数不匹配，挂起
-        loop {}
-    }
-
     // 使用 VGA 文本模式输出欢迎信息
     clear();
     print_string(b"AXIS: AXIS eXecute Instructions Steadily\n");
