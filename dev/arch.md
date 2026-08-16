@@ -6,27 +6,20 @@ AXIS/
 │   │   ├── Cargo.toml
 │   │   ├── stage1.asm                          # 第一阶段引导 (MBR, 16 位实模式, 512 字节)
 │   │   ├── stage2.asm                          # 第二阶段引导 (32 位保护模式启用)
-│   │   ├── stage2.ld                           # Stage2 链接脚本
+│   │   ├── stage2.ld                           # Stage2 链接脚本及内存布局定义
 │   │   └── src/
 │   │       └── lib.rs                          # Stage2 Rust 实现 (ELF 解析、内核加载)
 │   │
-│   ├── uefi/                                   # UEFI 现代引导模式 (UEFI 固件下运行)
-│   │   ├── Cargo.toml
-│   │   └── src/
-│   │       ├── main.rs                         # UEFI 主入口
-│   │       ├── graphics.rs                     # UEFI 图形初始化
-│   │       └── memory.rs                       # UEFI 内存映射获取
-│   │
-│   └── common/                                 # 引导程序通用代码
-│       ├── multiboot2.rs                       # Multiboot2 协议定义 (GRUB 兼容)
-│       └── boot_info.rs                        # 引导信息结构体
+│   └── uefi/                                   # UEFI 现代引导模式 (UEFI 固件下运行)
+│       ├── Cargo.toml
+│       └── src/
+│           ├── main.rs                         # UEFI 主入口
+│           ├── graphics.rs                     # UEFI 图形初始化
+│           └── memory.rs                       # UEFI 内存映射获取
 │
 ├── kernel/                                     # 内核主程序
 │   ├── Cargo.toml
-│   ├── Cargo.lock
-│   ├── build.rs                                # 构建脚本 (交叉编译配置)
 │   ├── kernel.ld                               # 内核链接脚本 (内存布局定义)
-│   ├── x86_64-unknown-axis.json                # 自定义 target 定义 (x86-64 编译目标)
 │   │
 │   └── src/
 │       ├── main.rs                             # 内核主函数入口
@@ -260,17 +253,18 @@ AXIS/
 │       │
 │       └── config.rs                           # 内核编译时配置常量
 │
-├── Makefile                                    # 构建系统主入口 (编译、运行、清理)
-├── build.sh                                    # Shell 构建脚本
-├── run_qemu.sh                                 # QEMU 虚拟机启动脚本 (BIOS 模式)
-├── run_grub.sh                                 # GRUB 引导启动脚本
-├── run_uefi.sh                                 # UEFI 模式启动脚本
-├── .cargo/config.toml                          # Cargo 配置 (编译器选项、依赖定义)
 ├── .gitignore                                  # Git 忽略文件列表
-├── Cargo.toml                                  # 项目清单文件 (依赖、元数据)
+├── axis.ps1                                    # PowerShell 构建脚本
+├── axis.sh                                     # Shell 构建脚本
 ├── Cargo.lock                                  # 依赖版本锁定文件
+├── Cargo.toml                                  # 项目清单文件 (依赖、元数据)
+├── LICENCE                                     # 项目项目许可证文件
+├── Makefile                                    # 构建系统主入口 (编译、运行、清理)
 ├── dev/                                        # 开发者文件夹
+│   ├── arch.md                                 # 架构设计文档
 │   ├── dev.md                                  # 开发者文档
-│   └── arch.md                                 # 架构设计文档
+│   ├── loadable.md                             # 可加载模块化改造文档
+│   └── roadmap.md                              # 路线落地计划文档
 ├── README.md                                   # 项目概览 (英文)
-└── README.zh-CN.md                             # 项目概览 (中文)
+├── README.zh-CN.md                             # 项目概览 (中文)
+└── x86_64-unknown-axis.json                    # 自定义 target 定义 (x86-64 编译目标)

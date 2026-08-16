@@ -215,8 +215,8 @@ gdt_descriptor:
 ; 数据区
 ; ------------------------------------------------------------
 boot_drive:     db 0                        ; 启动驱动器号
-msg_loading:    db "Loading AXIS...", 13, 10, 0
-msg_disk_error: db "Disk read error!", 13, 10, 0
+msg_loading:    db "Stage1: Loading Stage2...", 13, 10, 0
+msg_disk_error: db "Stage1: Disk read error!", 13, 10, 0
 disk_address_packet_kernel:
     db 0x10                 ; 包大小（16字节）
     db 0                    ; 保留（必须为0）

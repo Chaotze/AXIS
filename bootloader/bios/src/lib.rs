@@ -6,8 +6,7 @@
 // 功能：
 //   1. 简单的 ELF 解析器
 //   2. 加载内核段到内存
-//   3. 构建 Multiboot2 引导信息
-//   4. 跳转到内核入口
+//   3. 跳转到内核入口
 
 #![no_std]
 #![no_main]
@@ -95,11 +94,14 @@ pub extern "C" fn stage2_rust() -> ! {
         }
     };
 
-    print("Stage2 Rust: Jumping to kernel...\n");
+    // 打印内核入口地址
+    print("Stage2 Rust: Kernel entry at 0x");
+    print_hex(entry_point as u32);
+    print("\n");
 
     // 跳转到内核入口
-    // 传递 Multiboot2 魔数和引导信息地址
-    jump_to_kernel(entry_point, 0x36d76289, 0);
+    print("Stage2 Rust: Jumping to kernel...\n");
+    jump_to_kernel(entry_point);
 }
 
 /// 加载内核 ELF 文件
@@ -212,14 +214,10 @@ unsafe fn load_kernel(elf_start: *const u8) -> Option<u64> {
 
 /// 跳转到内核入口
 ///
-/// 遵循 Multiboot2 协议：
-///   - EAX = Multiboot2 魔数（0x36d76289）
-///   - EBX = 引导信息结构地址
-///
 /// # Safety
 /// 调用者必须确保 entry 是有效的内核入口地址
 #[inline(never)]
-fn jump_to_kernel(entry: u64, magic: u32, boot_info: u32) -> ! {
+fn jump_to_kernel(entry: u64) -> ! {
     // 使用内联汇编跳转到内核
     // 为什么使用内联汇编？
     //   - Rust 无法直接表达跳转到任意地址
@@ -228,12 +226,8 @@ fn jump_to_kernel(entry: u64, magic: u32, boot_info: u32) -> ! {
         // let vga = 0xB8000 as *mut u16;
         // *vga.offset(0) = 0x0f41; // 显示 'A'
         core::arch::asm!(
-            "mov eax, {magic:e}",       // EAX = Multiboot2 魔数
-            "mov ebx, {boot_info:e}",   // EBX = 引导信息地址
-            // "mov word ptr [0xB8000 + 2], 0x074C", // 显示 'L'
-            "jmp {entry}",              // 跳转到内核入口
-            magic = in(reg) magic,
-            boot_info = in(reg) boot_info,
+            // "mov [0xB8000 + 2], 0x074C", // 显示 'L'
+            "jmp {entry}",
             entry = in(reg) entry,
             options(noreturn)           // 标记为不返回
         );
@@ -288,6 +282,15 @@ fn print(s: &str) {
                 }
             }
         }
+    }
+}
+
+/// 打印 32 位十六进制数
+fn print_hex(val: u32) {
+    let hex_chars = b"0123456789ABCDEF";
+    for i in (0..8).rev() {
+        let digit = ((val >> (i * 4)) & 0xF) as usize;
+        print(core::str::from_utf8(&[hex_chars[digit]]).unwrap());
     }
 }
 

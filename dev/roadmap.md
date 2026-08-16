@@ -57,7 +57,6 @@
 3. Stage2 Rust 部分
   - ELF 文件解析器
   - 加载内核段到内存
-  - 构建 Multiboot2 引导信息
   - 跳转到内核入口
 
 1.2 UEFI 引导模式
@@ -76,12 +75,6 @@
 4. 初始化图形输出（GOP）
 5. ExitBootServices 并跳转到内核
 
-1.3 通用引导代码
-
-文件清单：
-- bootloader/common/multiboot2.rs（Multiboot2 协议定义）
-- bootloader/common/boot_info.rs（引导信息结构体）
-
 阶段目标：
 能够从 BIOS 和 UEFI 固件引导并进入内核
 
@@ -90,7 +83,6 @@
 - [ ] Stage2 成功切换到 64 位长模式
 - [ ] 正确解析内核 ELF 文件并加载所有段
 - [ ] UEFI 模式下能够使用 GOP 初始化图形输出
-- [ ] 构建完整的 Multiboot2 引导信息（内存映射、RSDP 地址等）
 - [ ] 成功跳转到内核入口点，让内核输出「AXIS: AXIS eXecute Instructions Steadily」
 - [ ] 在 QEMU 中验证两种引导模式都能工作
 

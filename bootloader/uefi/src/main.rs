@@ -165,10 +165,7 @@ fn main(image_handle: Handle, mut system_table: SystemTable<uefi::table::Boot>) 
     };
 
     // 6. 跳转到内核
-    // 传递引导信息（这里简化处理，实际应该构建完整的 Multiboot2 结构）
-    unsafe {
-        jump_to_kernel(kernel_entry, 0x36d76289, 0);
-    }
+    jump_to_kernel(kernel_entry);
 }
 
 // ============================================================
@@ -288,14 +285,10 @@ unsafe fn load_elf(elf_data: *const u8, boot_services: &uefi::table::boot::BootS
 /// # Safety
 /// 调用者必须确保内核已正确加载，entry 是有效的入口地址
 #[inline(never)]
-unsafe fn jump_to_kernel(entry: u64, magic: u32, boot_info: u64) -> ! {
+fn jump_to_kernel(entry: u64) -> ! {
     unsafe {
         core::arch::asm!(
-            "mov eax, {magic:e}",
-            "mov rbx, {boot_info}",
             "jmp {entry}",
-            magic = in(reg) magic,
-            boot_info = in(reg) boot_info,
             entry = in(reg) entry,
             options(noreturn)
         );
