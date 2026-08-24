@@ -18,7 +18,8 @@ target = "../x86_64-unknown-axis.json"
 # -T kernel.ld 指定自定义链接脚本，用于控制内核的内存布局、段对齐、
 #   符号地址分配等底层细节，确保内核映像符合该平台的启动规范
 [target.x86_64-unknown-axis]
-rustflags = ["-C", "link-args=-T kernel/kernel.ld"]
+# 链接脚本（-T）与 NASM 汇编产物的链接参数统一由 build.rs 以绝对路径输出，
+# 避免相对路径依赖 rustc 的工作目录（见 kernel/build.rs）
 
 # ------------------------------------------------------------
 # Unstable（不稳定）特性配置 - 用于裸机开发

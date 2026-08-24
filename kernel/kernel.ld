@@ -10,20 +10,20 @@
 /* 输出格式：x86-64 架构 ELF */
 OUTPUT_FORMAT(elf64-x86-64)
 
-/* 入口点：_start 符号（由或 Rust 的 #[no_mangle] 函数定义
+/* 入口点：_boot_rust 符号（Rust 的 #[no_mangle] 函数）
  * 
- * 注意：AXIS 内核使用 _start 作为引导加载程序（如 GRUB）跳转的入口
- *       该函数必须：
- *       1. 使用全局可见性（pub extern "C" fn _start()）
- *       2. 不能依赖任何标准库初始化（裸机环境）
- *       3. 执行必要的早期初始化（如设置栈指针、清零 BSS、启用分页等）
- *       4. 最终跳转到内核的 Rust 入口（如 kernel_main）
+ * 注意：AXIS 内核使用 _boot_rust 作为引导加载程序的跳转入口。
+ *       引导器（Stage2）在进入长模式并加载内核 ELF 后，直接跳转到
+ *       该入口（对应 ELF 的 e_entry）。
+ *       早期环境假设：
+ *       1. CPU 处于 64 位长模式，分页已启用（引导器页表，标识映射）
+ *       2. GDT 已由引导器加载
+ *       3. 栈指针有效（引导器设置）
  */
-ENTRY(_start)
+ENTRY(_boot_rust)
 
-/* 内核虚拟地址基址：高半核地址空间 0xFFFFFFFF80000000
- * 但是根据 Multiboot2 协议规定，内核入口应为低地址，进入 _start
- * 的桩作为跳板后，设置页表、进入长模式，再自行跳到高半核地址
+/* 内核虚拟地址基址：当前与物理地址一致（低地址加载）
+ * 引导器把内核加载到物理 1MB 处，并以标识映射方式运行
  */
 KERNEL_VIRT_BASE = 0x00000000;
 
@@ -60,7 +60,7 @@ SECTIONS
      */
     .text : AT(KERNEL_PHYS_BASE)
     {
-        *(.text._start)
+        *(.text._boot_rust)
         *(.text .text.*)
     }
 
