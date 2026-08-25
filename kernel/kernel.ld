@@ -10,20 +10,18 @@
 /* 输出格式：x86-64 架构 ELF */
 OUTPUT_FORMAT(elf64-x86-64)
 
-/* 入口点：_start 符号（由或 Rust 的 #[no_mangle] 函数定义
+/* 入口点：_boot 符号（定义于 arch/x86_64/boot.asm）
  * 
- * 注意：AXIS 内核使用 _start 作为引导加载程序（如 GRUB）跳转的入口
- *       该函数必须：
- *       1. 使用全局可见性（pub extern "C" fn _start()）
- *       2. 不能依赖任何标准库初始化（裸机环境）
- *       3. 执行必要的早期初始化（如设置栈指针、清零 BSS、启用分页等）
- *       4. 最终跳转到内核的 Rust 入口（如 kernel_main）
+ * Bootloader（BIOS Stage2 / UEFI）在进入长模式后跳转到此符号。
+ * _boot 负责建立恒等映射页表、清零 BSS、设置引导栈，
+ * 然后调用 Rust 入口 _boot_rust。
  */
-ENTRY(_start)
+ENTRY(_boot)
 
-/* 内核虚拟地址基址：高半核地址空间 0xFFFFFFFF80000000
- * 但是根据 Multiboot2 协议规定，内核入口应为低地址，进入 _start
- * 的桩作为跳板后，设置页表、进入长模式，再自行跳到高半核地址
+/* 内核虚拟地址基址：当前为 0，即内核链接在低地址（物理 = 虚拟）。
+ * 高半核（0xFFFFFFFF80000000）是远景目标；届时只需修改本常量，
+ * 并由 boot.asm 增加高半核映射后跳转到高地址。
+ * 低地址链接的原因：boot.asm 建立恒等映射即可运行，改动最小。
  */
 KERNEL_VIRT_BASE = 0x00000000;
 
@@ -34,7 +32,7 @@ KERNEL_PHYS_BASE = 0x00100000;
  * 段（Sections）布局定义
  * ------------------------------------------------------------
  * SECTIONS 块定义了各个段在内存中的位置和排列顺序
- * 所有地址都是相对于最终加载地址（由 Multiboot 加载器决定）
+ * 所有地址都是相对于最终加载地址（由 AXIS Bootloader 决定）
  */
 SECTIONS
 {
@@ -44,6 +42,20 @@ SECTIONS
     /* 起始符号（虚拟地址 & 物理地址） */
     __kernel_virt_start = .;
     __kernel_phys_start = KERNEL_PHYS_BASE;
+
+    /* ========================================================
+     * .boot - 引导段（代码 + 数据，可执行、可读写）
+     * ========================================================
+     * 存放 boot.asm 的引导代码和临时页表，必须位于映像最前，
+     * 因为 Bootloader 直接跳转到 _boot（映像起始处）执行。
+     *
+     * 该段同时包含代码（_boot、init_page_tables）和
+     * 数据（GDT、PML4/PDPT/PD 页表），因此需要可写可执行。
+     */
+    .boot : AT(. - KERNEL_VIRT_BASE)
+    {
+        *(.boot)
+    }
 
     /* ========================================================
      * .text - 代码段（只读、可执行）
@@ -58,9 +70,8 @@ SECTIONS
      * 
      * 注意：代码段在运行时是只读的，操作系统/内核必须保护它不被修改
      */
-    .text : AT(KERNEL_PHYS_BASE)
+    .text : AT(. - KERNEL_VIRT_BASE)
     {
-        *(.text._start)
         *(.text .text.*)
     }
 
