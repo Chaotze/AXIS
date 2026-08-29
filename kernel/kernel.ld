@@ -21,10 +21,10 @@ OUTPUT_FORMAT(elf64-x86-64)
  */
 ENTRY(_boot)
 
-/* 内核虚拟地址基址：高半核地址空间 0xFFFFFFFF80000000
+/* 内核虚拟地址基址：高半核地址空间 0xFFFFFFFF80000000（暂时改为 0x00000000 恒等映射）
  * boot.asm 负责建立页表和进入高地址，进入 _boot_rust 时已在高地址运行
  */
-KERNEL_VIRT_BASE = 0xFFFFFFFF80000000;
+KERNEL_VIRT_BASE = 0x00000000;
 
 /* 内核物理地址基址：从 1MB 处开始加载 */
 KERNEL_PHYS_BASE = 0x00100000;

@@ -33,7 +33,10 @@ pub extern "C" fn _boot_rust() -> ! {
 
     // 系统就绪
     println!("\n[INIT] System initialized successfully!");
-    println!("[INIT] Kernel is now running...\n");
+    println!("[INIT] Kernel is now running...");
+
+    // 再次打印启动 Banner
+    print_banner();
 
     // 主循环
     // 暂时只是挂起等待中断
