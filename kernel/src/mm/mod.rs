@@ -80,7 +80,7 @@ pub fn stats() -> MemoryStats {
 /// 打印内存统计（监控输出）
 pub fn print_stats() {
     let s = stats();
-    println!("[MEM] total={}K free={}K used={}K heap_objs={} heap_bytes={}B",
+    println!("[MEM] total={}MB free={}MB used={}MB heap_objs={} heap_bytes={}B",
         s.total_pages / 256, s.free_pages / 256, s.used_pages / 256,
         s.heap_objects, s.heap_bytes);
     println!("[MEM] pf={} demand={} cow={} swapped={}",
