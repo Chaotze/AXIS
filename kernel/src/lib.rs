@@ -5,6 +5,11 @@
 
 #![no_std]
 
+// 引入 alloc 分配器库：在提供 #[global_allocator] 后，
+// Box / Vec / String 等标准容器即可在内核中直接使用
+// （分配器实现见 mm/heap.rs）
+extern crate alloc;
+
 // 宏必须最先声明
 #[macro_use]
 pub mod macros;
@@ -18,6 +23,9 @@ pub mod arch;
 
 // 同步原语
 pub mod sync;
+
+// 内存管理（物理 / 虚拟 / 堆）
+pub mod mm;
 
 // 库函数模块
 pub mod libcore;

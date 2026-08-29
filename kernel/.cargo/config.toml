@@ -22,7 +22,10 @@ target = "../x86_64-unknown-axis.json"
 # 包含 "core"（Rust 核心库，无操作系统依赖）和
 # "compiler_builtins"（编译器内建函数，如整数溢出、内存操作等）
 # 原因：裸机环境没有预编译的标准库，必须在编译时从源码构建
-build-std = ["core", "compiler_builtins"]
+#
+# 为什么加入 "alloc"：mm/heap.rs 实现了 #[global_allocator]（Box/Vec
+# 等容器的后端）；alloc 与 core 一样可以脱离操作系统独立构建
+build-std = ["core", "alloc", "compiler_builtins"]
 
 # build-std-features: 为上述构建的标准库启用额外功能
 # "compiler-builtins-mem" 启用编译器内建的内存操作函数
