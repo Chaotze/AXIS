@@ -19,7 +19,7 @@ OUTPUT_FORMAT(elf64-x86-64)
  *       3. 执行必要的早期初始化（如设置栈指针、清零 BSS、启用分页等）
  *       4. 最终跳转到内核的 Rust 入口（如 kernel_main）
  */
-ENTRY(_boot)
+ENTRY(_boot_rust)
 
 /* 内核虚拟地址基址：高半核地址空间 0xFFFFFFFF80000000
  * boot.asm 负责建立页表和进入高地址，进入 _boot_rust 时已在高地址运行
@@ -69,6 +69,7 @@ SECTIONS
     . = ALIGN(4096);
     .text : AT(ADDR(.text) - KERNEL_VIRT_BASE)
     {
+        *(.text._boot_rust)
         *(.text .text.*)
     }
 
