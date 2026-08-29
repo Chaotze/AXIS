@@ -12,7 +12,7 @@
 # 这些目录必须包含 Cargo.toml 文件，且位于工作区根目录下
 # 工作区还支持隐式成员：如果根目录下有子目录包含 Cargo.toml，
 # 且没有被显式列出，可以使用 "members = ["*"]" 自动发现
-members = ["bootloader/bios", "bootloader/uefi", "kernel"]
+members = ["bootloader/bios", "bootloader/uefi", "kernel", "mmtest"]
 
 # resolver: 依赖解析器版本
 # 解析器版本的区别：

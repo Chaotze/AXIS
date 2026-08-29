@@ -1,0 +1,24 @@
+# ============================================================
+# AXIS 内存管理宿主单元测试（mmtest）
+# ============================================================
+# 通过 #[path] 直接编译内核的真实源文件（零复制、低冗余），
+# 在宿主（std）环境下运行「纯算法模块」的单元测试：
+#   - 伙伴系统（buddy）：分配/释放/合并/洞处理/随机压力
+#   - 区域与水位（zone / watermark / frame / numa）
+#   - SLUB 与缓存（slub / slab_cache / kmalloc）：对象往返、压力、无泄漏
+#   - VMA 管理（vma）：插入/切分/合并
+#   - 交换（swap）：slot 生命周期与内容往返
+#
+# 运行方式：
+#   cargo test -p mmtest
+#
+# 说明：依赖 arch/硬件/全局锁的胶水层（pmm.rs / vmm.rs / heap.rs）
+# 不在宿主测试范围内——它们的正确性由内核启动自测（mm::selftest）
+# 在 QEMU 中验证。
+[package]
+name = "mmtest"
+authors.workspace = true
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
