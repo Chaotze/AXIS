@@ -1,11 +1,23 @@
 ; ============================================================
-; x86_64 引导入口
+; x86_64 内核引导入口（64 位）
 ; ============================================================
-; 兼容 32 位和 64 位模式，无论如何进入都会：
-; 1. 建立完整的页表（低地址恒等映射 + 高地址映射）
-; 2. 进入长模式（如果还未进入）
-; 3. 启用分页
-; 4. 跳转到高地址 Rust 入口
+; 由 Bootloader（BIOS Stage2 或 UEFI）在已进入长模式后跳转而来，
+; 职责：
+;   1. 加载内核自己的平坦 GDT，重载段寄存器
+;   2. 建立 0-4GB 恒等映射页表（2MB 巨页），接管 CR3
+;   3. 确保 PAE / LME / NXE 已启用
+;   4. 清零 BSS，设置引导栈
+;   5. 跳转到 Rust 内核入口 _boot_rust
+;
+; 为什么这里只处理 64 位入口：
+;   - 本项目的 BIOS Stage2 与 UEFI 引导器在跳转内核前都已进入长模式
+;   - AXIS 已取消 Multiboot2 协议支持（见提交 c17258c），
+;     不存在 32 位保护模式直接进入内核的路径
+;
+; 为什么必须映射整个 0-4GB 而不是只有内核占用的前几 MB：
+;   - Local APIC 寄存器位于 0xFEE00000，I/O APIC 位于 0xFEC00000
+;   - 中断系统初始化（apic.rs / ioapic.rs）会直接访问这些 MMIO 地址
+;   - 如果页表只覆盖低地址，首次访问 APIC 就会触发页错误
 ;
 ; Intel 语法，使用 NASM 汇编器
 
@@ -26,37 +38,23 @@
 ; 页表项标志位
 %define PTE_PRESENT    (1 << 0)   ; P - 存在位
 %define PTE_WRITABLE   (1 << 1)   ; R/W - 可写位
-%define PTE_USER       (1 << 2)   ; U/S - 用户位
-%define PTE_WRITETHROUGH (1 << 3) ; PWT - 写穿透
-%define PTE_NOCACHE    (1 << 4)   ; PCD - 禁止缓存
-%define PTE_HUGE       (1 << 7)   ; PS - 巨页（在PD中表示2MB）
-%define PTE_GLOBAL     (1 << 8)   ; G - 全局页
-%define PTE_NO_EXECUTE (1 << 63)  ; XD - 禁止执行
-
-; 标准页表项（内核可读写）
-%define PTE_KERNEL (PTE_PRESENT | PTE_WRITABLE)
+%define PTE_HUGE       (1 << 7)   ; PS - 2MB 巨页
+%define PTE_KERNEL_PAGE (PTE_PRESENT | PTE_WRITABLE | PTE_HUGE)
 
 ; MSR 常量
 %define MSR_EFER 0xC0000080      ; Extended Feature Enable Register
-%define EFER_SCE  (1 << 0)       ; System Call Extensions
 %define EFER_LME  (1 << 8)       ; Long Mode Enable
-%define EFER_LMA  (1 << 10)      ; Long Mode Active
 %define EFER_NXE  (1 << 11)      ; No-Execute Enable
-
-; CR0 标志位
-%define CR0_PE    (1 << 0)       ; Protection Enable
-%define CR0_PG    (1 << 31)      ; Paging
 
 ; CR4 标志位
 %define CR4_PAE   (1 << 5)       ; Physical Address Extension
-%define CR4_PGE   (1 << 7)       ; Page Global Enable
 
 ; ============================================================
-; 32 位启动段
+; 64 位入口段
 ; ============================================================
 
 section .boot
-bits 32
+bits 64
 
 global _boot
 extern _boot_rust
@@ -64,276 +62,182 @@ extern __bss_start
 extern __bss_end
 
 _boot:
-    ; 此时 CPU 处于 32 位保护模式
-    ; 寄存器状态：
-    ;   EBX = Multiboot2 信息指针
-    ;   其他寄存器未定义
+    ; 进入时的 CPU 状态（由 BIOS Stage2 保证）：
+    ;   - 已处于 64 位长模式，分页已启用（Stage2 的 0-2GB 恒等映射）
+    ;   - CR3 指向 Stage2 的临时页表（位于物理 0x1000）
+    ;   - CS = 0x08（Stage2 的 64 位代码段），RSP = 0x200000
+    cli                         ; 禁用中断，初始化期间不允许被打断
+    cld                         ; DF = 0，字符串操作从低地址向高地址
 
-    cli                         ; 禁用中断
-    cld                         ; DF = 0（字符串操作从低到高）
-    
-    ; 保存 Multiboot2 信息指针（EBX 在两种模式下都有效）
-    mov esi, ebx                ; ESI 保存，后面会传给 Rust
+    ; --------------------------------------------------------
+    ; 第一步：加载内核自己的平坦 GDT
+    ; --------------------------------------------------------
+    ; Stage2 的 GDT 位于 0x7e00 附近的引导内存中，内核启动后
+    ; 随时可能被覆盖，因此必须切换到内核映像内部的 GDT。
+    lgdt [rel gdt64_descriptor]
 
-    ; ====================================================
-    ; 第一步：检测当前 CPU 模式
-    ; ====================================================
-    
-    ; 检查是否在长模式
-    mov ecx, MSR_EFER
-    rdmsr
-    test eax, EFER_LME
-    jnz .in_long_mode           ; 已在长模式
-    
-    ; ====================================================
-    ; 情况 A：从 32 位保护模式启动
-    ; ====================================================
-    
-    ; 检查是否在保护模式（PE 位）
-    mov eax, cr0
-    test eax, CR0_PE
-    jz .not_in_protected_mode   ; 不应该发生，但做防御性处理
-    
-    ; 保存 EBX（已在 ESI 中）
-    
-    ; 初始化页表（32位模式下，使用物理地址）
-    call init_page_tables
-    
-    ; 启用 PAE
-    mov eax, cr4
-    or eax, CR4_PAE
-    mov cr4, eax
-    
-    ; 启用 NXE 和 LME
-    mov ecx, MSR_EFER
-    rdmsr
-    or eax, EFER_NXE | EFER_LME
-    wrmsr
-    
-    ; 加载临时 GDT
-    lgdt [gdt_descriptor]
-    
-    ; 设置 CR3 指向 PML4
-    mov eax, pml4_table
-    mov cr3, eax
-    
-    ; 启用分页
-    mov eax, cr0
-    or eax, CR0_PG
-    mov cr0, eax
-    
-    ; 执行 far jmp 进入 64 位代码段
-    lea eax, [.long_mode_entry]
-    push dword 0x08             ; 64位代码段选择子
-    push eax
-    retf
-
-.not_in_protected_mode:
-    ; 如果不在保护模式（可能在实模式），显示错误
-    mov word [0xB8000], 0x4F50  ; 'P'
-    mov word [0xB8002], 0x4F4D  ; 'M'
-    jmp .hang
-
-    ; ====================================================
-    ; 情况 B：从 64 位长模式启动
-    ; ====================================================
-    
-section .boot
-bits 64
-
-.in_long_mode:
-    ; 已经在 64 位长模式，重新设置必要的部分
-    
-    ; 1. 重新加载 GDT
-    lgdt [gdt_descriptor_64]
-    
-    ; 2. 重新加载数据段
-    mov ax, 0x10                ; 64位数据段选择子
-    mov ss, ax
-    mov ds, ax
-    mov es, ax
-    mov fs, ax
-    mov gs, ax
-    
-    ; 3. 重新设置 CR3（重新加载页表）
-    ; 注意：这里 pml4_table 是物理地址，但在长模式下需要虚拟地址
-    ; 假设 identity mapping 使得物理地址可以直接访问
-    mov rax, pml4_table
-    mov cr3, rax
-    
-    ; 4. 重新设置 CR4（确保 PAE 和所需标志）
-    mov rax, cr4
-    or rax, CR4_PAE
-    ; 可以添加其他标志，如 CR4_OSFXSR, CR4_OSXMMEXCPT 等
-    mov cr4, rax
-    
-    ; 5. 重新设置 EFER（确保 NXE 和 LME）
-    mov ecx, MSR_EFER
-    rdmsr
-    or eax, EFER_NXE | EFER_LME
-    wrmsr
-    
-    ; 6. 重新设置 CR0（确保分页等）
-    mov rax, cr0
-    or rax, CR0_PG
-    ; 清除可能不需要的标志
-    ; and rax, ~CR0_WP  ; 如果需要可以禁用写保护
-    mov cr0, rax
-    
-    ; 7. 切换到我们自己的栈（如果有）
-    ; mov rsp, stack_top
-    
-    ; 跳转到统一的 64 位设置
-    jmp .long_mode_setup
-
-section .boot
-bits 64
-
-.long_mode_entry:
-    ; 从 32 位模式 far jmp 进入
-    
-    ; 重新加载数据段（使用 64 位数据段）
+    ; 重载数据段寄存器（0x10 = 内核数据段）
     mov ax, 0x10
     mov ss, ax
     mov ds, ax
     mov es, ax
     mov fs, ax
     mov gs, ax
-    
-    ; 跳转到统一的 64 位设置
-    jmp .long_mode_setup
 
-.long_mode_setup:
-    ; ====================================================
-    ; 统一的 64 位环境设置
-    ; ====================================================
-    
-    ; 此时：
-    ;   - CPU 在 64 位长模式
-    ;   - 分页已启用
-    ;   - GDT 已加载
-    ;   - ESI 保存着 Multiboot2 信息指针（32位值）
-    
-    ; 清空 BSS 段
-    lea rdi, [__bss_start]
-    lea rcx, [__bss_end]
+    ; 重载 CS：通过远返回将 0x08（内核代码段）写入 CS
+    push 0x08
+    lea rax, [rel .cs_reloaded]
+    push rax
+    retfq
+.cs_reloaded:
+
+    ; --------------------------------------------------------
+    ; 第二步：建立 0-4GB 恒等映射页表
+    ; --------------------------------------------------------
+    ; 页表结构（全部位于内核映像的 .boot 段，物理地址 < 4GB）：
+    ;   PML4[0]      -> PDPT
+    ;   PDPT[0..3]   -> PD 的 4 个 4KB 页（共 2048 个 2MB 巨页项）
+    ;   2048 × 2MB   = 4GB，覆盖 LAPIC/IOAPIC 等全部 MMIO 区域
+    call init_page_tables
+
+    ; 切换到内核自己的页表（写 CR3 同时刷新所有非全局 TLB 项）
+    lea rax, [rel pml4_table]
+    mov cr3, rax
+
+    ; 确保 PAE 已启用（长模式强制要求；Stage2 已设置，这里幂等再设）
+    mov rax, cr4
+    or rax, CR4_PAE
+    mov cr4, rax
+
+    ; 启用 NXE 和 LME（NXE 供后续页表的 NX 位生效；
+    ; LME 在进入长模式后由 CPU 自动转成 LMA，保留设置无害）
+    mov ecx, MSR_EFER
+    rdmsr
+    or eax, EFER_NXE | EFER_LME
+    wrmsr
+
+    ; --------------------------------------------------------
+    ; 第三步：清零 BSS 段
+    ; --------------------------------------------------------
+    ; Rust 的 static 变量（GDT/IDT/TSS/自旋锁等）大多位于 .bss，
+    ; 标准要求未初始化全局变量必须为 0，Bootloader 的 ELF 加载器
+    ; 虽已清过一次，这里再清一次以保证幂等。
+    lea rdi, [rel __bss_start]
+    lea rcx, [rel __bss_end]
     sub rcx, rdi
-    xor rax, rax
-    cld
+    xor eax, eax
     rep stosb
-    
-    ; 设置栈指针（如果还没设置）
-    ; lea rsp, [stack_top]
-    
-    ; 调用 Rust 入口
-    ; 参数：RDI = Multiboot2 信息指针（从 ESI 转换）
-    mov edi, esi                ; 32位指针扩展到64位
-    xor rax, rax
+
+    ; --------------------------------------------------------
+    ; 第四步：设置引导栈并跳入 Rust
+    ; --------------------------------------------------------
+    ; 引导栈放在 .bss 尾部区域（boot_stack_top），
+    ; 不再依赖 Stage2 遗留的 RSP = 0x200000
+    lea rsp, [rel boot_stack_top]
+    xor rbp, rbp                ; RBP = 0，标识栈帧的底部
+
+    ; 调用 Rust 入口（参数按 System V AMD64 ABI：RDI = 引导信息指针）
+    ; 当前没有需要传递的引导信息，置 0
+    xor edi, edi
     call _boot_rust
-    
-    ; 不应该返回
+
+    ; _boot_rust 声明为 -> !，理论上不会返回；防御性挂起
 .hang:
     hlt
     jmp .hang
 
 ; ============================================================
-; 页表初始化（32位代码）
+; 页表初始化（在启用新页表前调用）
 ; ============================================================
-
-section .boot
-bits 32
-
+; 此时仍在 Stage2 的 0-2GB 恒等映射下运行，页表区位于内核映像
+; （物理 0x100000+），可直接按物理地址写入。
 init_page_tables:
-    ; 使用 2MB 大页的 identity mapping
-    ; PML4 -> PDP -> PD -> 2MB 页
-    
-    ; 清空页表区域（假设在 .boot 段中）
-    lea edi, [pml4_table]
-    mov ecx, 0x1000 * 3         ; PML4 + PDP + PD (每个4KB)
+    ; 清零页表区域：PML4(4KB) + PDPT(4KB) + 4 个 PD(16KB) = 24KB
+    lea rdi, [rel pml4_table]
+    mov ecx, 0x6000 / 8
     xor eax, eax
-    cld
-    rep stosb
-    
-    ; 设置 PML4 条目
-    lea eax, [pdp_table]
-    or eax, 0x03                ; 存在 + 可写
-    mov [pml4_table], eax
-    
-    ; 设置 PDP 条目（指向 PD）
-    lea eax, [pd_table]
-    or eax, 0x03                ; 存在 + 可写
-    mov [pdp_table], eax
-    
-    ; 设置 PD 条目（2MB 大页，覆盖前 2MB）
-    ; 实际上需要覆盖更多内存，这里只设置一个示例
-    mov eax, 0x00000083         ; 2MB 页，存在，可写，PS=1
-    mov [pd_table], eax
-    
-    ; 为了覆盖更多内存，可以设置多个 PD 条目
-    ; 例如覆盖 0-4GB 需要 2048 个 PD 条目（每个2MB）
-    ; 这里是简化版本
-    
+    rep stosq
+
+    ; PML4[0] = PDPT | P | RW
+    lea rax, [rel pdpt_table]
+    or eax, PTE_PRESENT | PTE_WRITABLE
+    mov [rel pml4_table], rax
+
+    ; PDPT[0..3] = pd_table + i*4096 | P | RW
+    ; （4 个条目各指向一个 PD 页，每页 512 个巨页项，共覆盖 4GB）
+    lea rbx, [rel pd_table]
+    lea rdx, [rel pdpt_table]
+    mov ecx, 4
+.init_pdpt_loop:
+    mov rax, rbx
+    or eax, PTE_PRESENT | PTE_WRITABLE
+    mov [rdx], rax
+    add rbx, 0x1000
+    add rdx, 8
+    dec ecx
+    jnz .init_pdpt_loop
+
+    ; PD 表：2048 个 2MB 巨页项，映射物理 [0, 4GB)
+    ; 表项 = 页基址 | P | RW | PS
+    lea rdi, [rel pd_table]
+    mov eax, PTE_KERNEL_PAGE   ; 第一项：物理 0
+    mov ecx, 2048
+.init_pd_loop:
+    mov [rdi], rax
+    add eax, 0x200000          ; 下一个 2MB 页
+    add rdi, 8
+    dec ecx
+    jnz .init_pd_loop
     ret
 
 ; ============================================================
-; GDT（全局描述符表）
+; 64 位 GDT（临时，供 Rust 代码接管前使用）
 ; ============================================================
+; gdt.rs 在 arch::init() 中会建立正式的 GDT/TSS 并再次 lgdt，
+; 这里只需要平坦的代码段和数据段，保证内核代码可继续执行。
 
 section .boot
 align 8
 
-gdt:
-    ; 空描述符
+gdt64:
+    ; GDT[0] - 空描述符（CPU 要求）
     dq 0x0000000000000000
-    
-    ; 64位代码段（选择子 0x08）
-    ; 基址=0，限制=0，粒度=0，存在，可读，执行，64位
-    dw 0x0000                   ; 限制低16位
-    dw 0x0000                   ; 基址低16位
-    db 0x00                     ; 基址中8位
-    db 0b10011010               ; P=1, DPL=0, S=1, 代码段，可执行，可读
-    db 0b00100000               ; G=0, D/B=0, L=1, AVL=0, 限制高4位=0
-    db 0x00                     ; 基址高8位
-    
-    ; 64位数据段（选择子 0x10）
-    dw 0x0000                   ; 限制低16位
-    dw 0x0000                   ; 基址低16位
-    db 0x00                     ; 基址中8位
-    db 0b10010010               ; P=1, DPL=0, S=1, 数据段，可读可写
-    db 0b00000000               ; G=0, D/B=0, L=0, AVL=0, 限制高4位=0
-    db 0x00                     ; 基址高8位
+    ; GDT[1] - 64 位内核代码段（选择子 0x08）
+    ; 基址 = 0，L = 1（长模式），P = 1，DPL = 0，可执行可读
+    dq 0x00AF9A000000FFFF
+    ; GDT[2] - 64 位内核数据段（选择子 0x10）
+    ; 基址 = 0，P = 1，DPL = 0，可读可写
+    dq 0x00CF92000000FFFF
+gdt64_end:
 
-gdt_descriptor:
-    dw gdt_descriptor - gdt - 1 ; 限制
-    dd gdt                      ; 基址（32位物理地址）
-
-; 在64位模式下使用的GDT描述符（与上面相同，但提供64位地址）
-section .boot
-bits 64
-
-gdt_descriptor_64:
-    dw gdt_descriptor_64 - gdt - 1
-    dq gdt                     ; 基址（64位虚拟地址）
+gdt64_descriptor:
+    dw gdt64_end - gdt64 - 1   ; GDT 界限
+    dq gdt64                   ; GDT 基地址（64 位虚拟地址 = 物理地址）
 
 ; ============================================================
-; 数据段：页表
+; 页表数据区（.boot 段，4KB 对齐）
 ; ============================================================
 
 section .boot
 align 4096
 
 pml4_table:
-    times 512 dq 0
+    resq 512                  ; PML4：512 项 × 8 字节 = 4KB
 
-pdp_table:
-    times 512 dq 0
+pdpt_table:
+    resq 512                  ; PDPT：512 项 × 8 字节 = 4KB
 
 pd_table:
-    times 512 dq 0
+    resq 2048                 ; 4 个 PD 页：2048 项 × 8 字节 = 16KB
+                              ; （2MB 巨页 × 2048 = 4GB 恒等映射）
 
 ; ============================================================
-; BSS 段（由链接脚本定义）
+; 引导栈（.bss，由 _boot 在清零 BSS 后设置）
 ; ============================================================
 
 section .bss
-; __bss_start 和 __bss_end 由链接器脚本提供
+align 16
+
+boot_stack_bottom:
+    resb 0x10000              ; 64KB 引导栈
+boot_stack_top:

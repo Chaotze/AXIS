@@ -15,11 +15,10 @@ use crate::arch::x86_64::idt::InterruptStackFrame;
 ///
 /// 初始化顺序：
 /// 1. 禁用 PIC（8259A）- 使用 APIC 代替
-/// 2. 映射 Local APIC MMIO 区域
-/// 3. 初始化 Local APIC
-/// 4. 初始化 I/O APIC
-/// 5. 初始化定时器
-/// 6. 启用中断
+/// 2. 初始化 Local APIC
+/// 3. 初始化 I/O APIC
+/// 4. 初始化定时器
+/// 5. 启用中断
 pub fn init() {
     // 禁用传统的 8259A PIC
     // 为什么要禁用：APIC 是更现代的中断控制器，性能更好
@@ -27,17 +26,19 @@ pub fn init() {
         disable_pic();
     }
 
-    // 映射 APIC 设备的 MMIO 区域（设备寄存器）
-    // 必须在访问 APIC 寄存器之前完成
-    unsafe {
-        map_mmio_identity(0xFEC0_0000); // I/O APIC
-        map_mmio_identity(0xFEE0_0000); // Local APIC
-    }
-
     // 初始化 APIC
     unsafe {
         apic::init();
         ioapic::init();
+    }
+
+    // 将 IRQ 0-15 的中断存根（entry.asm 中的 irq_N_handler）
+    // 安装到 IDT 的向量 32-47。
+    // 为什么在这里做：IDT 已在 idt::init() 中只安装了 CPU 异常，
+    // 硬件中断向量必须由中断子系统补全；若不安装，定时器中断
+    // 首次触发就会命中空的 IDT 表项而崩溃。
+    unsafe {
+        super::idt::install_irq_handlers();
     }
 
     // 初始化定时器
@@ -50,84 +51,6 @@ pub fn init() {
     }
 
     println!("[INTERRUPT] Interrupt system initialized");
-}
-
-/// 早期页表帧（4KB 对齐的页表缓冲区）
-///
-/// 作为过渡方案，早期 MMIO 标识映射需要物理页帧作为中间页表，
-/// 在虚拟内存管理（阶段 3）接管页表前从内核 .bss 中借用。
-#[repr(align(4096))]
-#[allow(dead_code)]
-struct AlignedPage([u64; 512]);
-
-static mut EARLY_PD: AlignedPage = AlignedPage([0; 512]);
-
-/// 早期 MMIO 标识映射（Identity Mapping）
-///
-/// 当前内核运行在引导器提供的低 2GB 标识映射页表上（虚拟地址=物理地址），
-/// 尚未建立 config 中规划的高半核映射（PHYSICAL_MEMORY_OFFSET 暂未生效），
-/// 因此 `PhysAddr::to_virt()` / `PageTableMapper` 等依赖高半核映射的接口
-/// 暂时不可用。在访问 Local APIC / I/O APIC 等 MMIO 设备寄存器前，
-/// 需要直接在其物理地址处建立 2MB 巨页标识映射。
-///
-/// 注意：这是过渡方案，待虚拟内存管理（阶段 3）接管页表后应移除，
-/// 改用统一的 MMIO 映射机制。
-///
-/// # Safety
-/// 仅应在早期引导阶段、页表所有权尚未移交时调用一次。
-/// `phys` 必须是 2MB 对齐的 MMIO 基地址。
-unsafe fn map_mmio_identity(phys: u64) {
-    use core::arch::asm;
-
-    // 页表项标志：P=1, RW=1, PCD=1（禁用缓存，MMIO 不可缓存）, PS=1（2MB 巨页）
-    const HUGE_PAGE_FLAGS: u64 = 0x1 | 0x2 | 0x10 | 0x80;
-
-    // 计算页表索引
-    let p3_index = ((phys >> 30) & 0x1FF) as usize;
-    let p2_index = ((phys >> 21) & 0x1FF) as usize;
-    assert_eq!(phys & 0x1F_FFFF, 0, "MMIO 基地址必须 2MB 对齐");
-
-    // 读取当前 PML4（引导器页表，物理=虚拟）
-    let cr3: u64;
-    unsafe {
-        asm!("mov {}, cr3", out(reg) cr3, options(nostack, preserves_flags));
-    }
-
-    // 当前页表使用 PML4[0] -> PDPT（引导器已建立）
-    let pml4_entry = unsafe { (cr3 as *const u64).read_volatile() };
-    assert!(pml4_entry & 1 != 0, "PML4[0] 不存在，页表结构异常");
-    let pdpt_phys = pml4_entry & 0x000F_FFFF_FFFF_F000;
-
-    // PDPT[p3_index]：不存在则分配一个新的 PD 页表帧
-    let pdpt_entry = unsafe { (pdpt_phys as *const u64).add(p3_index).read_volatile() };
-    let pd_phys = if pdpt_entry & 1 != 0 {
-        pdpt_entry & 0x000F_FFFF_FFFF_F000
-    } else {
-        // 从内核 .bss 中借用一页作为 PD（内核当前按标识映射链接，
-        // 静态变量的虚拟地址即物理地址）。
-        // 注意：必须 4KB 对齐！CPU 会按页对齐掩码解释页表项中的地址位，
-        // 未对齐的帧会导致 CPU 读取错误的页表偏移。
-        let frame = core::ptr::addr_of_mut!(EARLY_PD) as u64;
-        assert_eq!(frame & 0xFFF, 0, "EARLY_PD 必须页对齐");
-        unsafe {
-            core::ptr::write_bytes(frame as *mut u8, 0, core::mem::size_of::<AlignedPage>());
-            (pdpt_phys as *mut u64).add(p3_index).write_volatile(frame | 0x3); // P | RW
-        }
-        frame
-    };
-
-    // PD[p2_index]：建立 2MB 巨页标识映射（若尚未建立）
-    let pd_entry = unsafe { (pd_phys as *const u64).add(p2_index).read_volatile() };
-    if pd_entry & 1 == 0 {
-        unsafe {
-            (pd_phys as *mut u64).add(p2_index).write_volatile(phys | HUGE_PAGE_FLAGS);
-        }
-    }
-
-    // 刷新 TLB，使新映射立即生效
-    unsafe {
-        asm!("invlpg [{}]", in(reg) phys, options(nostack, preserves_flags));
-    }
 }
 
 /// 禁用 8259A PIC

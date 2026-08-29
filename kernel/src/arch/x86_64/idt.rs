@@ -182,6 +182,53 @@ pub unsafe fn set_user_handler(index: usize, handler: u64) {
     }
 }
 
+/// 安装硬件中断（IRQ 0-15）的 IDT 表项
+///
+/// 将 entry.asm 提供的 irq_0_handler .. irq_15_handler 存根
+/// 安装到 IDT 向量 32-47（IRQ n 对应向量 32 + n）。
+///
+/// 为什么需要单独的函数：
+/// - idt::init() 只安装 CPU 异常（0-31），硬件中断向量留空
+/// - 定时器（向量 32）在中断系统启用后会周期触发，
+///   必须提前安装好处理入口，否则 CPU 会因空的 IDT 表项
+///   产生 #GP 异常并 panic
+pub unsafe fn install_irq_handlers() {
+    unsafe extern "C" {
+        fn irq_0_handler();
+        fn irq_1_handler();
+        fn irq_2_handler();
+        fn irq_3_handler();
+        fn irq_4_handler();
+        fn irq_5_handler();
+        fn irq_6_handler();
+        fn irq_7_handler();
+        fn irq_8_handler();
+        fn irq_9_handler();
+        fn irq_10_handler();
+        fn irq_11_handler();
+        fn irq_12_handler();
+        fn irq_13_handler();
+        fn irq_14_handler();
+        fn irq_15_handler();
+    }
+
+    let handlers: [unsafe extern "C" fn(); 16] = [
+        irq_0_handler, irq_1_handler, irq_2_handler, irq_3_handler,
+        irq_4_handler, irq_5_handler, irq_6_handler, irq_7_handler,
+        irq_8_handler, irq_9_handler, irq_10_handler, irq_11_handler,
+        irq_12_handler, irq_13_handler, irq_14_handler, irq_15_handler,
+    ];
+
+    // IRQ 从向量 32 开始；中断门（非陷阱门），不使用 IST
+    for (irq, handler) in handlers.iter().enumerate() {
+        unsafe {
+            set_handler(32 + irq, *handler as *const () as u64, 0, false);
+        }
+    }
+
+    println!("[IDT] IRQ handlers (vector 32-47) installed");
+}
+
 
 // ============================================================
 // 异常处理程序入口
