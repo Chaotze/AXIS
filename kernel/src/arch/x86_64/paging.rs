@@ -35,6 +35,8 @@ impl PageTableFlags {
     pub const HUGE_PAGE: Self = Self(1 << 7);
     /// 全局页：TLB 刷新时不清除此项（需要 CR4.PGE = 1）
     pub const GLOBAL: Self = Self(1 << 8);
+    /// 写时复制标记（软件位 bit 9：硬件忽略，用于 COW 页标记）
+    pub const COW: Self = Self(1 << 9);
     /// 禁止执行：页面不可执行（需要 EFER.NXE = 1）
     pub const NO_EXECUTE: Self = Self(1 << 63);
 
@@ -374,6 +376,29 @@ impl PageTableMapper {
 
         if entry.is_present() {
             Some(PhysAddr(entry.addr().0 + addr.page_offset()))
+        } else {
+            None
+        }
+    }
+
+    /// 查询某虚拟地址所在页的页表项标志（仅供读取，不改动）
+    ///
+    /// 为什么要这个接口：COW / 权限管理需要知道当前页“是不是
+    /// 写了 COW 标记、是否只读”，而 translate 只返回物理地址。
+    /// 当前只支持 4KB 页粒度（未映射/巨页等情形返回 None）。
+    pub fn pte_flags(&self, addr: VirtAddr) -> Option<PageTableFlags> {
+        let p4_index = addr.p4_index();
+        let p3_index = addr.p3_index();
+        let p2_index = addr.p2_index();
+        let p1_index = addr.p1_index();
+
+        let p3 = self.p4_table[p4_index].next_table()?;
+        let p2 = p3[p3_index].next_table()?;
+        let p1 = p2[p2_index].next_table()?;
+        let entry = &p1[p1_index];
+
+        if entry.is_present() {
+            Some(entry.flags())
         } else {
             None
         }
