@@ -20,6 +20,7 @@ AXIS/
 ├── kernel/                                     # 内核主程序
 │   ├── Cargo.toml
 │   ├── kernel.ld                               # 内核链接脚本 (内存布局：低端引导桩 + 高半核主体)
+│   ├── build.rs                                # 构建脚本 (NASM 汇编、链接参数注入)
 │   │
 │   └── src/
 │       ├── main.rs                             # 内核主函数入口
@@ -262,7 +263,7 @@ AXIS/
 │       │   ├── procfs_emulation.rs             # /proc 伪文件系统模拟 (不一定必要)
 │       │   └── personality.rs                  # 进程个性设置 (PER_LINUX)
 │       │
-│       ├── libcore/                           # 通用库函数和工具
+│       ├── lib/                                # 通用库函数和工具
 │       │   ├── mod.rs
 │       │   ├── vga.rs                          # VGA 文本模式底层支持 (共享写入器，供 print/panic 复用)
 │       │   ├── print.rs                        # 打印和日志函数 (基于 vga.rs 加锁输出)
@@ -305,3 +306,23 @@ AXIS/
 ├── README.md                                   # 项目概览 (英文)
 ├── README.zh-CN.md                             # 项目概览 (中文)
 └── x86_64-unknown-axis.json                    # 自定义 target 定义 (x86-64 编译目标)
+
+<br>
+
+---
+
+## 测试策略
+
+1. **宿主单元测试**（纯逻辑模块：lib/、sync/ 等）：
+   - 命令：`cargo +nightly test -p axis-kernel --lib --target x86_64-pc-windows-msvc`
+   - build.rs 按目标门控（仅 `target_os = "none"` 的裸机构建注入
+     NASM 对象与链接脚本），宿主测试构建不受影响
+   - 2024 Edition 下 cargo 对 test profile 强制 panic = "unwind"，
+     无需显式配置
+2. **QEMU 冒烟验证**（启动链与硬件初始化）：
+   - 命令：`./axis build` 后以 `-cpu max` 无头启动，
+     经 QMP 转储 VGA 文本缓冲与寄存器现场核对
+   - 核对点：启动 banner、GDT/IDT/APIC 初始化日志、
+     稳态 RIP 停在主循环 hlt、无三重故障
+3. 各模块的设计决策（const 泛型参数含义、算法选型、
+   安全约定）以文件头部注释为准

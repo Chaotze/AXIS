@@ -9,7 +9,7 @@
 #[macro_export]
 macro_rules! print {
     ($($arg:tt)*) => {
-        $crate::libcore::print::_print(format_args!($($arg)*))
+        $crate::lib::print::_print(format_args!($($arg)*))
     };
 }
 
