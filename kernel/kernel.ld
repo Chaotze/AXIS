@@ -10,22 +10,21 @@
 /* 输出格式：x86-64 架构 ELF */
 OUTPUT_FORMAT(elf64-x86-64)
 
-/* 入口点：_start 符号（由或 Rust 的 #[no_mangle] 函数定义
+/* 入口点：_boot 符号（由或 Rust 的 #[no_mangle] 函数定义
  * 
- * 注意：AXIS 内核使用 _start 作为引导加载程序（如 GRUB）跳转的入口
+ * 注意：AXIS 内核使用 _boot 作为引导加载程序（如 GRUB）跳转的入口
  *       该函数必须：
- *       1. 使用全局可见性（pub extern "C" fn _start()）
+ *       1. 使用全局可见性（pub extern "C" fn _boot()）
  *       2. 不能依赖任何标准库初始化（裸机环境）
  *       3. 执行必要的早期初始化（如设置栈指针、清零 BSS、启用分页等）
  *       4. 最终跳转到内核的 Rust 入口（如 kernel_main）
  */
-ENTRY(_start)
+ENTRY(_boot)
 
 /* 内核虚拟地址基址：高半核地址空间 0xFFFFFFFF80000000
- * 但是根据 Multiboot2 协议规定，内核入口应为低地址，进入 _start
- * 的桩作为跳板后，设置页表、进入长模式，再自行跳到高半核地址
+ * boot.asm 负责建立页表和进入高地址，进入 _boot_rust 时已在高地址运行
  */
-KERNEL_VIRT_BASE = 0x00000000;
+KERNEL_VIRT_BASE = 0xFFFFFFFF80000000;
 
 /* 内核物理地址基址：从 1MB 处开始加载 */
 KERNEL_PHYS_BASE = 0x00100000;
@@ -38,12 +37,21 @@ KERNEL_PHYS_BASE = 0x00100000;
  */
 SECTIONS
 {
-    /* 虚拟地址从 KERNEL_VIRT_BASE + KERNEL_PHYS_BASE 开始 */
-    . = KERNEL_VIRT_BASE + KERNEL_PHYS_BASE;
 
-    /* 起始符号（虚拟地址 & 物理地址） */
-    __kernel_virt_start = .;
-    __kernel_phys_start = KERNEL_PHYS_BASE;
+    /* 低地址段（运行在 32 位保护模式），供 GRUB2 加载和跳转 */
+    . = KERNEL_PHYS_BASE;
+    .boot : AT(KERNEL_PHYS_BASE)
+    {
+        *(.boot .boot.*)
+    }
+    . = ALIGN(8);
+    .multiboot2 :
+    {
+        *(.multiboot2 .multiboot2.*)
+    }
+
+    /* 高地址段（运行在 64 位长模式），是真正的内核主体 */
+    . += KERNEL_VIRT_BASE;
 
     /* ========================================================
      * .text - 代码段（只读、可执行）
@@ -58,9 +66,9 @@ SECTIONS
      * 
      * 注意：代码段在运行时是只读的，操作系统/内核必须保护它不被修改
      */
-    .text : AT(KERNEL_PHYS_BASE)
+    . = ALIGN(4096);
+    .text : AT(ADDR(.text) - KERNEL_VIRT_BASE)
     {
-        *(.text._start)
         *(.text .text.*)
     }
 
@@ -83,8 +91,7 @@ SECTIONS
      *   - 内核应尽量将常量数据放在只读区域
      */
     . = ALIGN(4096);
-    __rodata_virt = .;
-    .rodata : AT(__rodata_virt - KERNEL_VIRT_BASE)
+    .rodata : AT(ADDR(.rodata) - KERNEL_VIRT_BASE)
     {
         *(.rodata .rodata.*)
     }
@@ -106,8 +113,7 @@ SECTIONS
      * 对齐到 4KB 边界便于内存管理
      */
     . = ALIGN(4096);
-    __data_virt = .;
-    .data : AT(__data_virt - KERNEL_VIRT_BASE)
+    .data : AT(ADDR(.data) - KERNEL_VIRT_BASE)
     {
         *(.data .data.*)
     }
@@ -138,18 +144,13 @@ SECTIONS
      *   - 未清零的 BSS 会导致未定义行为（如指针解引用错误）
      */
     . = ALIGN(4096);
-    __bss_virt = .;
-    .bss : AT(__bss_virt - KERNEL_VIRT_BASE)
+    .bss : AT(ADDR(.bss) - KERNEL_VIRT_BASE)
     {
         __bss_start = .;          /* 虚拟地址 */
         *(.bss .bss.*)
         *(COMMON)
         __bss_end = .;            /* 虚拟地址 */
     }
-
-    /* 内核结束地址（虚拟 & 物理） */
-    __kernel_virt_end = .;
-    __kernel_phys_end = . - KERNEL_VIRT_BASE;
 
     /* ========================================================
      * /DISCARD/ - 丢弃不需要的段

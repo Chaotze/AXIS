@@ -6,7 +6,7 @@
 #
 # 用法：
 #   ./axis           - 构建可引导的 BIOS 镜像，并在 QEMU 中运行
-#   ./axis build     - 同上
+#   ./axis build     - 构建可引导的 BIOS 镜像
 #   ./axis run       - 在 QEMU 中运行可引导的 BIOS 镜像
 #   ./axis clean     - 清理构建产物
 #   ./axis rebuild   - 清理构建产物后构建并运行 BIOS 镜像
@@ -70,9 +70,7 @@ build() {
     nasm -f elf64 bootloader/bios/stage2.asm -o target/x86_64-unknown-bios/stage2_asm
 
     # 编译 Rust 部分
-    pushd bootloader/bios
-    cargo +nightly build --release
-    popd
+    pushd bootloader/bios && cargo +nightly build --release && popd
 
     # 链接 Bootloader 的 Stage2
     test_tool rust-lld
@@ -96,7 +94,7 @@ build() {
     info "Creating disk image..."
 
     # 创建磁盘镜像（0.25MB）
-    IMG_PATH="target/axis-0.1.0-bios-x86_64.img"
+    IMG_PATH="target/axis-0.1.1-bios-x86_64.img"
     dd if=/dev/zero of="$IMG_PATH" bs=1024 count=256 2>/dev/null
     info "Image file created: $IMG_PATH"
 
@@ -127,7 +125,7 @@ run() {
 
     qemu_args=(
         qemu-system-x86_64
-        -drive format=raw,file=target/axis-0.1.0-bios-x86_64.img
+        -drive format=raw,file=target/axis-0.1.1-bios-x86_64.img
         -display curses
         -m 128M -no-reboot -no-shutdown
     )
@@ -137,7 +135,7 @@ run() {
         @ launch
         --type=tab
         --cwd=current
-        --title="axis-0.1.0-bios-x86_64"
+        --title="axis-0.1.1-bios-x86_64"
         -- bash -c "$qemu_cmd; exec bash"
     )
     kitty "${kitty_args[@]}"
@@ -149,7 +147,7 @@ help() {
 	info ""
 	info "Targets:"
 	info "  ./axis          - Build bootable BIOS image and launch in QEMU"
-	info "  ./axis build    - Alias for the default target"
+	info "  ./axis build    - Build bootable BIOS image"
 	info "  ./axis run      - Launch the previously built BIOS image in QEMU"
 	info "  ./axis clean    - Remove all build artifacts"
 	info "  ./axis rebuild  - Fully rebuild: clean + build + run"
@@ -161,7 +159,10 @@ main() {
     # 创建 target 目录
     mkdir -p target/x86_64-unknown-bios
 
-    case "${1:-build}" in
+    case "${1:-auto}" in
+        build)
+            build
+            ;;
         run)
             run
             ;;
@@ -170,13 +171,14 @@ main() {
             ;;
         rebuild)
             clean
+            mkdir -p target/x86_64-unknown-bios
             build
             run
             ;;
         help)
             help
             ;;
-        build|*)
+        auto|*)
             build
             run
             ;;

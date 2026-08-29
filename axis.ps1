@@ -6,7 +6,7 @@
 #
 # 用法：
 #   .\axis           - 构建可引导的 BIOS 镜像，并在 QEMU 中运行
-#   .\axis build     - 同上
+#   .\axis build     - 构建可引导的 BIOS 镜像
 #   .\axis run       - 在 QEMU 中运行可引导的 BIOS 镜像
 #   .\axis clean     - 清理构建产物
 #   .\axis rebuild   - 清理构建产物后构建并运行 BIOS 镜像
@@ -76,9 +76,7 @@ function Invoke-Build {
     nasm -f elf64 bootloader\bios\stage2.asm -o target\x86_64-unknown-bios\stage2_asm
 
     # 编译 Rust 部分
-    Push-Location bootloader\bios
-    cargo +nightly build --release
-    Pop-Location
+    Push-Location bootloader\bios; cargo +nightly build --release; Pop-Location
 
     # 链接 Bootloader 的 Stage2
     Test-Tool rust-lld
@@ -104,7 +102,7 @@ function Invoke-Build {
     # 创建磁盘镜像（0.25MB）
     $imgSize = 0.25 * 1024 * 1024
     $bytes = New-Object byte[] $imgSize
-    $imgPath = Join-Path $axisPath "target\axis-0.1.0-bios-x86_64.img"
+    $imgPath = Join-Path $axisPath "target\axis-0.1.1-bios-x86_64.img"
     [System.IO.File]::WriteAllBytes($imgPath, $bytes)
     Write-Info "Image file created: $imgPath"
 
@@ -142,7 +140,7 @@ function Invoke-Run {
 
     $qemuCmdParts = @(
         'qemu-system-x86_64',
-        '-drive format=raw,file=target\axis-0.1.0-bios-x86_64.img',
+        '-drive format=raw,file=target\axis-0.1.1-bios-x86_64.img',
         '-display curses'
         '-m 128M -no-reboot -no-shutdown'
     )
@@ -150,7 +148,7 @@ function Invoke-Run {
     wt -w 0 new-tab `
         -d . `
         -p "Windows PowerShell" `
-        --title "axis-0.1.0-bios-x86_64" `
+        --title "axis-0.1.1-bios-x86_64" `
         -- powershell -NoExit -Command "& { $qemuCmd }"
 }
 
@@ -160,7 +158,7 @@ function Invoke-Help {
 	Write-Info ""
 	Write-Info "Targets:"
 	Write-Info "  .\axis          - Build bootable BIOS image and launch in QEMU"
-	Write-Info "  .\axis build    - Alias for the default target"
+	Write-Info "  .\axis build    - Build bootable BIOS image"
 	Write-Info "  .\axis run      - Launch the previously built BIOS image in QEMU"
 	Write-Info "  .\axis clean    - Remove all build artifacts"
 	Write-Info "  .\axis rebuild  - Fully rebuild: clean + build + run"
@@ -173,6 +171,9 @@ function Main {
     New-Item -ItemType Directory -Force -Path "target\x86_64-unknown-bios" | Out-Null
 
     switch ($Target) {
+        "build" {
+            Invoke-Build
+        }
         "run" {
             Invoke-Run
         }
@@ -181,6 +182,7 @@ function Main {
         }
         "rebuild" {
             Invoke-Clean
+            New-Item -ItemType Directory -Force -Path "target\x86_64-unknown-bios" | Out-Null
             Invoke-Build
             Invoke-Run
         }

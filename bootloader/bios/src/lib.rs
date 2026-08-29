@@ -226,7 +226,7 @@ fn jump_to_kernel(entry: u64) -> ! {
         // let vga = 0xB8000 as *mut u16;
         // *vga.offset(0) = 0x0f41; // 显示 'A'
         core::arch::asm!(
-            // "mov [0xB8000 + 2], 0x074C", // 显示 'L'
+            // "mov word ptr [0xB8000 + 2], 0x074C", // 显示 'L'
             "jmp {entry}",
             entry = in(reg) entry,
             options(noreturn)           // 标记为不返回

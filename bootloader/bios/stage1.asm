@@ -42,10 +42,6 @@ start:
     ; DL 寄存器包含 BIOS 启动驱动器号（0x80 = 第一块硬盘）
     mov [boot_drive], dl
 
-    ; 打印启动消息
-    mov si, msg_loading
-    call print_string
-
 ; ------------------------------------------------------------
 ; 加载 Stage2 和内核到内存
 ; ------------------------------------------------------------
@@ -66,6 +62,9 @@ load_stage2:
     ;   AH = 状态码（0 = 成功）
     ;   AL = 实际读取的扇区数
 
+    mov si, msg_loading_stage2
+    call print_string
+
     mov ah, 0x02            ; 读取扇区功能
     mov al, 128             ; 读取 128 个扇区（64KB）
     mov ch, 0               ; 柱面 0
@@ -76,8 +75,17 @@ load_stage2:
     int 0x13                ; 调用 BIOS 磁盘服务
     jc disk_error           ; CF=1 表示错误
 
+    mov si, msg_loading_kernel
+    call print_string
+
     ; 读取内核到 0x10000（LBA 模式，扩展 INT 13H）
     mov si, disk_address_packet_kernel
+    mov ah, 0x42
+    mov dl, [boot_drive]
+    int 0x13
+    jc disk_error
+
+    mov si, disk_address_packet_kernel_part2
     mov ah, 0x42
     mov dl, [boot_drive]
     int 0x13
@@ -214,9 +222,10 @@ gdt_descriptor:
 ; ------------------------------------------------------------
 ; 数据区
 ; ------------------------------------------------------------
-boot_drive:     db 0                        ; 启动驱动器号
-msg_loading:    db "Stage1: Loading Stage2...", 13, 10, 0
-msg_disk_error: db "Stage1: Disk read error!", 13, 10, 0
+boot_drive:         db 0    ; 启动驱动器号
+msg_loading_stage2: db "Stage1: Loading stage2...", 13, 10, 0
+msg_loading_kernel: db "Stage1: Loading kernel...", 13, 10, 0
+msg_disk_error:     db "Stage1: Disk read error!", 13, 10, 0
 disk_address_packet_kernel:
     db 0x10                 ; 包大小（16字节）
     db 0                    ; 保留（必须为0）
@@ -224,6 +233,13 @@ disk_address_packet_kernel:
     dw 0x0000               ; 目标地址偏移量（16位）
     dw 0x1000               ; 目标地址段（0x1000:0x0000 = 0x10000）
     dq 128                  ; LBA 起始扇区
+disk_address_packet_kernel_part2:
+    db 0x10                 ; 包大小（16字节）
+    db 0                    ; 保留（必须为0）
+    dw 0x0080               ; 要读取的扇区数（128个扇区 = 64KB）
+    dw 0x0000               ; 目标地址偏移量（16位）
+    dw 0x2000               ; 目标地址段（0x2000:0x0000 = 0x20000）
+    dq 256                  ; LBA 起始扇区
 
 ; ------------------------------------------------------------
 ; 引导扇区签名

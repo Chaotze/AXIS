@@ -6,7 +6,7 @@
 #
 # 用法：
 #   make             - 构建可引导的 BIOS 镜像，并在 QEMU 中运行
-#   make build       - 同上
+#   make build       - 构建可引导的 BIOS 镜像
 #   make run         - 在 QEMU 中运行可引导的 BIOS 镜像
 #   make clean       - 清理构建产物
 #   make rebuild     - 清理构建产物后构建并运行 BIOS 镜像
@@ -14,25 +14,32 @@
 
 .PHONY: all build run clean rebuild help
 
+# 检测操作系统并设置命令
+ifeq ($(OS),Windows_NT)
+	AXIS_CMD = powershell -ExecutionPolicy Bypass -File axis.ps1
+else
+	AXIS_CMD = bash axis.sh
+endif
+
 # 默认目标：构建可引导的 BIOS 镜像，并在 QEMU 中运行
 all:
-	@bash axis.sh
+	@$(AXIS_CMD)
 
-# 同上
+# 构建可引导的 BIOS 镜像
 build:
-	@bash axis.sh build
+	@$(AXIS_CMD) build
 
 # 在 QEMU 中运行可引导的 BIOS 镜像
 run:
-	@bash axis.sh run
+	@$(AXIS_CMD) run
 
 # 清理构建产物
 clean:
-	@bash axis.sh clean
+	@$(AXIS_CMD) clean
 
 # 清理构建产物后构建并运行 BIOS 镜像
 rebuild:
-	@bash axis.sh rebuild
+	@$(AXIS_CMD) rebuild
 
 # 帮助信息
 help:
@@ -40,7 +47,7 @@ help:
 	@echo ""
 	@echo "Targets:"
 	@echo "  make            - Build bootable BIOS image and launch in QEMU"
-	@echo "  make build      - Alias for the default target"
+	@echo "  make build      - Build bootable BIOS image"
 	@echo "  make run        - Launch the previously built BIOS image in QEMU"
 	@echo "  make clean      - Remove all build artifacts"
 	@echo "  make rebuild    - Fully rebuild: clean + build + run"
