@@ -3,8 +3,10 @@
 // ============================================================
 // 内核 panic 时的处理逻辑，提供详细的错误信息和调试支持
 
-use core::panic::PanicInfo;
 use core::fmt::Write;
+use core::panic::PanicInfo;
+
+use axis_kernel::libcore::vga::VgaWriter;
 
 /// Panic 处理器
 ///
@@ -22,7 +24,9 @@ fn panic(info: &PanicInfo) -> ! {
         core::arch::asm!("cli");
     }
 
-    // 使用 VGA 文本模式输出错误信息
+    // 使用共享的 VGA 写入器直接输出
+    // 为什么不用 println!：panic 可能正发生在持锁路径上（如自旋锁内部），
+    // 再取一次锁会自死锁；此处中断已禁用，独占式裸写即可可靠输出
     let mut writer = VgaWriter::new();
 
     // 红色背景标题
@@ -53,71 +57,5 @@ fn panic(info: &PanicInfo) -> ! {
         unsafe {
             core::arch::asm!("hlt");
         }
-    }
-}
-
-/// VGA 文本模式写入器
-///
-/// 封装 VGA 缓冲区访问，提供格式化输出能力
-struct VgaWriter {
-    buffer: *mut u16,
-    column: usize,
-    row: usize,
-    color: u8,
-}
-
-impl VgaWriter {
-    const WIDTH: usize = 80;
-    const HEIGHT: usize = 25;
-    const VGA_BUFFER: *mut u16 = 0xb8000 as *mut u16;
-
-    fn new() -> Self {
-        Self {
-            buffer: Self::VGA_BUFFER,
-            column: 0,
-            row: 0,
-            color: 0x0f, // 黑底亮白
-        }
-    }
-
-    fn set_color(&mut self, color: u8) {
-        self.color = color;
-    }
-
-    fn write_byte(&mut self, byte: u8) {
-        match byte {
-            b'\n' => {
-                self.column = 0;
-                self.row += 1;
-                if self.row >= Self::HEIGHT {
-                    self.row = Self::HEIGHT - 1;
-                }
-            }
-            byte => {
-                if self.column >= Self::WIDTH {
-                    self.column = 0;
-                    self.row += 1;
-                    if self.row >= Self::HEIGHT {
-                        self.row = Self::HEIGHT - 1;
-                    }
-                }
-
-                unsafe {
-                    let pos = self.row * Self::WIDTH + self.column;
-                    let color_byte = (self.color as u16) << 8;
-                    self.buffer.add(pos).write_volatile(color_byte | byte as u16);
-                }
-                self.column += 1;
-            }
-        }
-    }
-}
-
-impl Write for VgaWriter {
-    fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        for byte in s.bytes() {
-            self.write_byte(byte);
-        }
-        Ok(())
     }
 }

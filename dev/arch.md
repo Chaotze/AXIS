@@ -19,7 +19,7 @@ AXIS/
 │
 ├── kernel/                                     # 内核主程序
 │   ├── Cargo.toml
-│   ├── kernel.ld                               # 内核链接脚本 (内存布局定义)
+│   ├── kernel.ld                               # 内核链接脚本 (内存布局：低端引导桩 + 高半核主体)
 │   │
 │   └── src/
 │       ├── main.rs                             # 内核主函数入口
@@ -31,7 +31,7 @@ AXIS/
 │       │   ├── mod.rs
 │       │   └── x86_64/                         # x86_64 架构实现
 │       │       ├── mod.rs
-│       │       ├── boot.asm                    # 内核启动代码 (64 位验证、栈初始化)
+│       │       ├── boot.asm                    # 内核启动代码 (建立高半核映射、绝对跳转高半区、取消恒等映射)
 │       │       ├── cpu.rs                      # CPU 特性检测和启用
 │       │       ├── gdt.rs                      # GDT (全局描述符表) 设置
 │       │       ├── idt.rs                      # IDT (中断描述符表) 设置
@@ -226,9 +226,10 @@ AXIS/
 │       │   ├── procfs_emulation.rs             # /proc 伪文件系统模拟 (不一定必要)
 │       │   └── personality.rs                  # 进程个性设置 (PER_LINUX)
 │       │
-│       ├── lib/                                # 通用库函数和工具
+│       ├── libcore/                           # 通用库函数和工具
 │       │   ├── mod.rs
-│       │   ├── print.rs                        # 打印和日志函数
+│       │   ├── vga.rs                          # VGA 文本模式底层支持 (共享写入器，供 print/panic 复用)
+│       │   ├── print.rs                        # 打印和日志函数 (基于 vga.rs 加锁输出)
 │       │   │
 │       │   ├── collections/                    # 数据结构库
 │       │   │   ├── mod.rs

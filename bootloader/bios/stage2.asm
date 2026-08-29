@@ -253,7 +253,7 @@ enable_paging:
 print_string_32:
     pusha
     mov edi, VGA_MEM        ; VGA 文本缓冲区
-    mov ah, 0               ; 默认：白色文本黑色背景 (等同 0x07)
+    mov ah, 0x07            ; 白色文本黑色背景
 .loop:
     lodsb                   ; AL = [ESI], ESI++
     test al, al             ; 检查是否为 null

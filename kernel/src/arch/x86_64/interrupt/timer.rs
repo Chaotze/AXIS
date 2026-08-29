@@ -3,7 +3,7 @@
 // ============================================================
 // 系统定时器（APIC Timer）
 
-use crate::config::TIMER_FREQUENCY;
+use crate::config::{LAPIC_MMIO_BASE, TIMER_FREQUENCY};
 
 /// 初始化定时器
 ///
@@ -27,8 +27,7 @@ pub fn init() {
 /// 我们使用 Periodic 模式作为系统定时器
 unsafe fn init_apic_timer() {
     unsafe {
-        // APIC Timer 寄存器地址
-        const LAPIC_BASE: u64 = 0xFEE00000;
+        // APIC Timer 寄存器地址（经物理内存映射区访问，见 config::LAPIC_MMIO_BASE）
         const LVT_TIMER: u32 = 0x320;
         const TIMER_DIV: u32 = 0x3E0;
         const TIMER_INIT: u32 = 0x380;
@@ -39,7 +38,7 @@ unsafe fn init_apic_timer() {
         // 0001 = divide by 4
         // ...
         // 1010 = divide by 128
-        let div_reg = (LAPIC_BASE + TIMER_DIV as u64) as *mut u32;
+        let div_reg = (LAPIC_MMIO_BASE + TIMER_DIV as u64) as *mut u32;
         core::ptr::write_volatile(div_reg, 0b1010);
 
         // 配置 LVT Timer 寄存器
@@ -47,7 +46,7 @@ unsafe fn init_apic_timer() {
         // bits 16: Mask (0=enabled, 1=masked)
         // bits 7-0: Vector
         let timer_vector = 32; // IRQ 0 映射到向量 32
-        let lvt_timer = (LAPIC_BASE + LVT_TIMER as u64) as *mut u32;
+        let lvt_timer = (LAPIC_MMIO_BASE + LVT_TIMER as u64) as *mut u32;
         let lvt_value = (1 << 17) | timer_vector; // Periodic mode + vector
         core::ptr::write_volatile(lvt_timer, lvt_value);
 
@@ -59,7 +58,7 @@ unsafe fn init_apic_timer() {
         //
         // 实际应该通过校准获取准确值，这里用估算值
         let init_count = 15625 * (TIMER_FREQUENCY / 1000);
-        let init_reg = (LAPIC_BASE + TIMER_INIT as u64) as *mut u32;
+        let init_reg = (LAPIC_MMIO_BASE + TIMER_INIT as u64) as *mut u32;
         core::ptr::write_volatile(init_reg, init_count);
     }
 }

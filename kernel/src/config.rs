@@ -30,6 +30,19 @@ pub const PHYSICAL_MEMORY_OFFSET: u64 = 0xFFFF_8000_0000_0000;
 pub const KERNEL_HEAP_START: u64 = 0xFFFF_FFFF_C000_0000;
 pub const KERNEL_HEAP_SIZE: u64 = 512 * 1024 * 1024; // 512MB
 
+/// MMIO 设备基址（物理内存映射区内的虚拟地址）
+///
+/// 高半核启动后，boot.asm 会删除低端恒等映射（PML4[0]），
+/// 物理地址（如 VGA 的 0xB8000、Local APIC 的 0xFEE00000）不再可直接解引用。
+/// 所有硬件 MMIO 统一以「物理地址 + PHYSICAL_MEMORY_OFFSET」的虚拟地址访问。
+///
+/// 为什么集中在 config.rs：
+/// - 这些地址属于虚拟地址空间布局的一部分，与 PHYSICAL_MEMORY_OFFSET 同源
+/// - 打印、APIC、I/O APIC 等多个模块共用，集中定义避免魔数四处重复
+pub const VGA_TEXT_BUFFER: u64 = PHYSICAL_MEMORY_OFFSET + 0xB8000;
+pub const LAPIC_MMIO_BASE: u64 = PHYSICAL_MEMORY_OFFSET + 0xFEE0_0000;
+pub const IOAPIC_MMIO_BASE: u64 = PHYSICAL_MEMORY_OFFSET + 0xFEC0_0000;
+
 /// 页面大小
 pub const PAGE_SIZE: usize = 4096;
 
