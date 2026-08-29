@@ -7,8 +7,9 @@
 
 mod panic;
 
-use axis_kernel::prelude::*;
 use axis_kernel::config;
+use axis_kernel::libcore::vga;
+use axis_kernel::prelude::*;
 
 /// 内核入口点
 ///
@@ -21,8 +22,8 @@ use axis_kernel::config;
 /// 4. 启动主循环
 #[unsafe(no_mangle)]
 pub extern "C" fn _boot_rust() -> ! {
-    // 清屏
-    clear_screen();
+    // 清屏（VGA 缓冲区经物理内存映射区访问，见 config::VGA_TEXT_BUFFER）
+    vga::clear_screen();
 
     // 打印启动 Banner
     print_banner();
@@ -52,18 +53,4 @@ fn print_banner() {
     println!("{}", config::KERNEL_BANNER);
     println!("  {}: {} v{}", config::KERNEL_NAME, config::KERNEL_SLOGAN, config::KERNEL_VERSION);
     println!("  Copyright (C) {}.", config::KERNEL_AUTHOR);
-}
-
-/// 清屏
-fn clear_screen() {
-    const VGA_BUFFER: *mut u16 = 0xb8000 as *mut u16;
-    const WIDTH: usize = 80;
-    const HEIGHT: usize = 25;
-    const BLANK: u16 = 0x0720; // 黑底白字空格
-
-    unsafe {
-        for i in 0..(WIDTH * HEIGHT) {
-            VGA_BUFFER.add(i).write_volatile(BLANK);
-        }
-    }
 }

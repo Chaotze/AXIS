@@ -23,6 +23,9 @@ impl MsiAddress {
     /// - bit 2: Destination Mode（0=物理，1=逻辑）
     /// - bits 1-0: 保留（必须为 0）
     pub fn new(dest_id: u8, dest_mode_logical: bool) -> Self {
+        // MSI 地址必须是 Local APIC 的物理地址 0xFEE00000，
+        // 与页表无关：设备在总线上以该地址发起写事务送达 APIC，
+        // CPU 不对 MSI 地址做页表转换，因此**不能**加 PHYSICAL_MEMORY_OFFSET
         let mut value = 0xFEE00000;
         value |= (dest_id as u32) << 12;
         if dest_mode_logical {

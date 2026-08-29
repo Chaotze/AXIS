@@ -3,8 +3,13 @@
 // ============================================================
 // 高级可编程中断控制器（I/O 部分）
 
-/// I/O APIC 基地址（默认）
-const IOAPIC_BASE: u64 = 0xFEC00000;
+use crate::config::IOAPIC_MMIO_BASE;
+
+/// I/O APIC 基地址
+///
+/// 为什么不再用物理地址 0xFEC00000：高半核启动后低端恒等映射已被删除
+/// （见 boot.asm），MMIO 必须经物理内存映射区访问；
+/// config::IOAPIC_MMIO_BASE = 物理地址 + PHYSICAL_MEMORY_OFFSET
 
 /// I/O APIC 寄存器
 #[allow(dead_code)]
@@ -27,8 +32,8 @@ mod reg {
 #[inline]
 unsafe fn read_reg(reg: u8) -> u32 {
     unsafe {
-        let ioregsel = IOAPIC_BASE as *mut u32;
-        let iowin = (IOAPIC_BASE + 0x10) as *const u32;
+        let ioregsel = IOAPIC_MMIO_BASE as *mut u32;
+        let iowin = (IOAPIC_MMIO_BASE + 0x10) as *const u32;
 
         core::ptr::write_volatile(ioregsel, reg as u32);
         core::ptr::read_volatile(iowin)
@@ -42,8 +47,8 @@ unsafe fn read_reg(reg: u8) -> u32 {
 #[inline]
 unsafe fn write_reg(reg: u8, value: u32) {
     unsafe {
-        let ioregsel = IOAPIC_BASE as *mut u32;
-        let iowin = (IOAPIC_BASE + 0x10) as *mut u32;
+        let ioregsel = IOAPIC_MMIO_BASE as *mut u32;
+        let iowin = (IOAPIC_MMIO_BASE + 0x10) as *mut u32;
 
         core::ptr::write_volatile(ioregsel, reg as u32);
         core::ptr::write_volatile(iowin, value);

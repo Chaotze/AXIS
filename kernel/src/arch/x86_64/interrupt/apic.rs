@@ -3,8 +3,13 @@
 // ============================================================
 // 高级可编程中断控制器（本地部分）
 
-/// Local APIC 基地址（默认）
-const LAPIC_BASE: u64 = 0xFEE00000;
+use crate::config::LAPIC_MMIO_BASE;
+
+/// Local APIC 基地址
+///
+/// 为什么不再用物理地址 0xFEE00000：高半核启动后低端恒等映射已被删除
+/// （见 boot.asm），MMIO 必须经物理内存映射区访问；
+/// config::LAPIC_MMIO_BASE = 物理地址 + PHYSICAL_MEMORY_OFFSET
 
 /// Local APIC 寄存器偏移
 #[allow(dead_code)]
@@ -33,7 +38,7 @@ mod reg {
 #[inline]
 unsafe fn read_reg(offset: u32) -> u32 {
     unsafe {
-        let addr = (LAPIC_BASE + offset as u64) as *const u32;
+        let addr = (LAPIC_MMIO_BASE + offset as u64) as *const u32;
         core::ptr::read_volatile(addr)
     }
 }
@@ -45,7 +50,7 @@ unsafe fn read_reg(offset: u32) -> u32 {
 #[inline]
 unsafe fn write_reg(offset: u32, value: u32) {
     unsafe {
-        let addr = (LAPIC_BASE + offset as u64) as *mut u32;
+        let addr = (LAPIC_MMIO_BASE + offset as u64) as *mut u32;
         core::ptr::write_volatile(addr, value);
     }
 }
