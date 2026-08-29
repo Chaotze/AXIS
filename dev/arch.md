@@ -89,6 +89,42 @@ AXIS/
 │       │   │
 │       │   └── addr.rs                         # 地址工具函数 (虚拟/物理转换)
 │       │
+│       │   ┌——— mm 子系统实现说明（与设计的一致性修订）———┐
+│       │   │ 文件结构与原设计一致（pmm.rs 为主模块文件 + pmm/ 子目录，
+│       │   │ vmm.rs / heap.rs 同理）。实现中按现实约束做了如下落地：
+│       │   │
+│       │   │ 1. 分层：把「纯算法」与「内核胶水」拆开。buddy / zone /
+│       │   │    watermark / frame / numa / vma / slub / slab_cache /
+│       │   │    kmalloc / swap 均为纯逻辑模块（不引用 arch 与全局锁、
+│       │   │    自身不依赖堆），可被宿主单元测试（mmtest crate）直接
+│       │   │    编译运行；pmm.rs / vmm.rs / heap.rs / page_table.rs /
+│       │   │    mapping.rs / cow.rs 为装配层，承担全局状态、锁与
+│       │   │    arch 对接。
+│       │   │ 2. 伙伴系统元数据（段树空闲计数 + 双向空闲链）从被管理
+│       │   │    物理内存顶部划分（Linux bootmem 式），使 PMM 在堆就绪
+│       │   │    前自举：分配器不依赖分配。元数据访问必须经物理内存
+│       │   │    映射区（PHYSICAL_MEMORY_OFFSET）——boot.asm 已删除
+│       │   │    低端恒等映射，物理地址不可直接解引用。
+│       │   │ 3. 堆对象驻留物理直接映射区：kmalloc 返回 phys + OFFSET
+│       │   │    的虚拟地址，无需为堆另建映射；KERNEL_HEAP_START 保留
+│       │   │    为将来独立堆映射的 VA 规划。SLUB 的 slab 页头与对象
+│       │   │    空闲链共置页内（分配器自举），kfree 以页头魔数+
+│       │   │    cache_id 定位缓存；kmalloc 为 9 级 2 的幂尺寸桶 + 大
+│       │   │    对象直接连续页。
+│       │   │ 4. COW 采用页表软件位（PageTableFlags::COW = bit9）；
+│       │   │    为让「只读共享页」在核心态写同样触发缺页，cpu.rs 已
+│       │   │    启用 CR0.WP。
+│       │   │ 5. swap 先以 MemorySwapStore（内存页模拟磁盘）走通全流程，
+│       │   │    接口面向 SwapStore trait，块设备就绪后替换实现即可。
+│       │   │ 6. layout.rs 以 config.rs 为地址常量的唯一事实来源（重新
+│       │   │    导出 + 补充用户空间布局），避免常量两处定义漂移。
+│       │   │ 7. NUMA 当前为单节点 UMA 回退（结构就位，待 ACPI SRAT
+│       │   │    接入后填充节点与亲和关系）。
+│       │   │ 8. 测试：mmtest（工作区成员，编译内核源文件在宿主环境跑
+│       │   │    单元/压力测试）+ 内核启动自测 mm::selftest（QEMU 内
+│       │   │    验证按需分页、COW 拆解、交换换入等真实硬件路径）。
+│       │   └—— 锁序约定：VMM → PMM → HEAP ——————————┘
+│       │
 │       ├── task/                               # 进程和线程管理 (调度、生命周期)
 │       │   ├── mod.rs
 │       │   ├── process.rs                      # 进程操作 (fork、exec、exit、wait)
