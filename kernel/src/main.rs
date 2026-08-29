@@ -31,6 +31,29 @@ pub extern "C" fn _boot_rust() -> ! {
     println!("\n[INIT] Initializing architecture...");
     axis_kernel::arch::init();
 
+    // 内存管理初始化（物理内存 → 堆 → 虚拟内存）
+    println!("\n[INIT] Initializing memory management...");
+    if let Err(e) = axis_kernel::mm::init() {
+        println!("[INIT] MM init failed: {:?}", e);
+    } else {
+        // 打印内存概况
+        let p = axis_kernel::mm::pmm::stats();
+        println!("[MM] {} zones ready", p.zone_count);
+        for i in 0..p.zone_count {
+            let z = &p.zones[i];
+            println!(
+                "  Zone[{}] type={} pages={} free={} watermark={}",
+                i, z.ty, z.total, z.free, z.level
+            );
+        }
+
+        // 内存管理自测（单元验证 + 压力测试，满足验收标准）
+        axis_kernel::mm::selftest();
+
+        // 输出监控统计
+        axis_kernel::mm::print_stats();
+    }
+
     // 系统就绪
     println!("\n[INIT] System initialized successfully!");
     println!("[INIT] Kernel is now running...");
