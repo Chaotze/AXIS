@@ -99,7 +99,7 @@ pub struct Sysfs {
 
 impl Sysfs {
     /// 创建新的 sysfs 实例
-    pub fn new() -> KernelResult<Self> {
+    pub fn new() -> KernelResult<alloc::sync::Arc<Self>> {
         let mut sysfs = Sysfs {
             nodes: Vec::new(),
             next_ino: 2,
@@ -129,7 +129,7 @@ impl Sysfs {
             root.children.push((b"module".to_vec(), 5));
         }
 
-        Ok(sysfs)
+        Ok(alloc::sync::Arc::new(sysfs))
     }
 
     /// 获取节点

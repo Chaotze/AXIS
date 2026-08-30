@@ -6,7 +6,7 @@
 
 use crate::fs::vfs::{
     FileSystem, DirectoryEntry, FileMode, FileType,
-    InodeMetadata, InodeNumber, UnixTime
+    InodeMetadata, InodeNumber
 };
 use crate::lib::result::KernelResult;
 use alloc::vec::Vec;
@@ -112,7 +112,7 @@ pub struct Devfs {
 
 impl Devfs {
     /// 创建新的 devfs 实例
-    pub fn new() -> KernelResult<Self> {
+    pub fn new() -> KernelResult<alloc::sync::Arc<Self>> {
         let mut devfs = Devfs {
             nodes: Vec::new(),
             next_ino: 2,
@@ -145,7 +145,7 @@ impl Devfs {
             root.children.push((b"random".to_vec(), 6));
         }
 
-        Ok(devfs)
+        Ok(alloc::sync::Arc::new(devfs))
     }
 
     /// 获取节点

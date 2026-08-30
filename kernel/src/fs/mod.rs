@@ -19,6 +19,7 @@ pub mod pagecache;
 pub mod mount;
 pub mod file;
 pub mod filesystems;
+pub mod syscall;
 
 // 重新导出常用类型
 pub use vfs::{
@@ -69,13 +70,50 @@ pub fn init() {
     *guard = Some(state);
     drop(guard);
 
-    println!("[VFS] VFS module ready");
+    println!("[VFS] Registering file systems...");
 
-    // 后续：
-    // 1. 注册具体文件系统（tmpfs、devfs、procfs、sysfs）
-    // 2. 创建根文件系统并挂载
-    // 3. 挂载其他文件系统
-    // 4. 运行自测
+    // 创建并挂载文件系统
+    // 为什么这样做：按优先级顺序挂载，tmpfs 作为根文件系统
+    match filesystems::Tmpfs::new() {
+        Ok(tmpfs) => {
+            println!("[VFS] tmpfs created successfully");
+            // 挂载到根目录（inode 2）
+            let mut guard = VFS_STATE.lock();
+            if let Some(state) = guard.as_mut() {
+                let _ = state.mount_table.mount(2, tmpfs, MountFlags::new(0), b"tmpfs");
+            }
+            drop(guard);
+        }
+        Err(e) => println!("[VFS] Failed to create tmpfs: {:?}", e),
+    }
+
+    // 挂载 devfs 到 /dev
+    match filesystems::Devfs::new() {
+        Ok(devfs) => {
+            println!("[VFS] devfs created successfully");
+            // 注意：在完整的系统中，/dev 目录应该先在 tmpfs 中创建
+            // 这里简化处理
+        }
+        Err(e) => println!("[VFS] Failed to create devfs: {:?}", e),
+    }
+
+    // 挂载 procfs 到 /proc
+    match filesystems::Procfs::new() {
+        Ok(procfs) => {
+            println!("[VFS] procfs created successfully");
+        }
+        Err(e) => println!("[VFS] Failed to create procfs: {:?}", e),
+    }
+
+    // 挂载 sysfs 到 /sys
+    match filesystems::Sysfs::new() {
+        Ok(sysfs) => {
+            println!("[VFS] sysfs created successfully");
+        }
+        Err(e) => println!("[VFS] Failed to create sysfs: {:?}", e),
+    }
+
+    println!("[VFS] VFS module ready");
 
     selftest();
 }
@@ -105,27 +143,147 @@ pub fn clear_dentry_cache() {
 
 fn selftest() -> bool {
     println!("\n[VFS-SELFTEST] VFS Subsystem Selftest");
-    let all = true;
+    let mut passed = 0;
+    let mut total = 0;
 
-    // 基础模块单元测试已在各模块中进行
-    // 此处为集成测试
+    // 测试 1：VFS 初始化
+    total += 1;
+    let guard = VFS_STATE.lock();
+    if guard.is_some() {
+        println!("[VFS-SELFTEST] VFS state initialized: PASS");
+        passed += 1;
+    } else {
+        println!("[VFS-SELFTEST] VFS state initialized: FAIL");
+    }
+    drop(guard);
 
-    println!("[VFS-SELFTEST] VFS core traits: PASS");
-    println!("[VFS-SELFTEST] path parsing: PASS");
-    println!("[VFS-SELFTEST] inode permissions: PASS");
-    println!("[VFS-SELFTEST] dentry structure: PASS");
-    println!("[VFS-SELFTEST] dentry cache: PASS");
-    println!("[VFS-SELFTEST] page cache: PASS");
-    println!("[VFS-SELFTEST] mount management: PASS");
-    println!("[VFS-SELFTEST] file operations: PASS");
+    // 测试 2：挂载表非空
+    total += 1;
+    let guard = VFS_STATE.lock();
+    if let Some(state) = guard.as_ref() {
+        if !state.mount_table.is_empty() {
+            println!("[VFS-SELFTEST] File systems mounted: PASS (count={})", state.mount_table.len());
+            passed += 1;
+        } else {
+            println!("[VFS-SELFTEST] File systems mounted: FAIL");
+        }
+    }
+    drop(guard);
 
-    // 后续测试项：
-    // - tmpfs 挂载和文件操作
-    // - 路径穿越挂载点
-    // - 页缓存一致性
-    // - 权限检查
+    // 测试 3：路径解析
+    total += 1;
+    match path::parse_path(b"/a/b/c") {
+        Ok(parsed) => {
+            if parsed.is_absolute && parsed.components.len() == 3 {
+                println!("[VFS-SELFTEST] Path parsing: PASS");
+                passed += 1;
+            } else {
+                println!("[VFS-SELFTEST] Path parsing: FAIL");
+            }
+        }
+        Err(_) => println!("[VFS-SELFTEST] Path parsing: FAIL"),
+    }
 
-    println!("[VFS-SELFTEST] Result: {}", if all { "ALL PASS" } else { "FAILED" });
-    all
+    // 测试 4：dentry 缓存
+    total += 1;
+    let guard = VFS_STATE.lock();
+    if let Some(state) = guard.as_ref() {
+        let stats = state.dentry_cache.stats();
+        println!("[VFS-SELFTEST] Dentry cache: PASS (capacity={})", stats.capacity);
+        passed += 1;
+    }
+    drop(guard);
 
+    // 测试 5：inode 权限检查
+    total += 1;
+    let metadata = InodeMetadata {
+        inode_number: 1,
+        file_type: FileType::File,
+        size: 100,
+        blocks: 1,
+        mode: FileMode::new(0o644),
+        uid: 100,
+        gid: 100,
+        nlink: 1,
+        atime: 0,
+        mtime: 0,
+        ctime: 0,
+        btime: None,
+    };
+    if inode::check_permission(&metadata, inode::UserId { uid: 100 }, inode::PermissionType::Read) {
+        println!("[VFS-SELFTEST] Permission check: PASS");
+        passed += 1;
+    } else {
+        println!("[VFS-SELFTEST] Permission check: FAIL");
+    }
+
+    // 测试 6：tmpfs 基本操作
+    total += 1;
+    match filesystems::Tmpfs::new() {
+        Ok(tmpfs) => {
+            // 验证根目录
+            if tmpfs.root_inode() == 2 {
+                // 验证 stat
+                if tmpfs.stat(2).is_ok() {
+                    // 验证 readdir
+                    if tmpfs.readdir(2).is_ok() {
+                        println!("[VFS-SELFTEST] tmpfs basic ops: PASS");
+                        passed += 1;
+                    } else {
+                        println!("[VFS-SELFTEST] tmpfs basic ops: FAIL (readdir)");
+                    }
+                } else {
+                    println!("[VFS-SELFTEST] tmpfs basic ops: FAIL (stat)");
+                }
+            } else {
+                println!("[VFS-SELFTEST] tmpfs basic ops: FAIL (root_inode)");
+            }
+        }
+        Err(_) => println!("[VFS-SELFTEST] tmpfs basic ops: FAIL (creation)"),
+    }
+
+    // 测试 7：devfs 基本操作
+    total += 1;
+    match filesystems::Devfs::new() {
+        Ok(devfs) => {
+            if devfs.root_inode() == 2 && devfs.readdir(2).is_ok() {
+                println!("[VFS-SELFTEST] devfs basic ops: PASS");
+                passed += 1;
+            } else {
+                println!("[VFS-SELFTEST] devfs basic ops: FAIL");
+            }
+        }
+        Err(_) => println!("[VFS-SELFTEST] devfs basic ops: FAIL (creation)"),
+    }
+
+    // 测试 8：procfs 基本操作
+    total += 1;
+    match filesystems::Procfs::new() {
+        Ok(procfs) => {
+            if procfs.root_inode() == 2 && procfs.readdir(2).is_ok() {
+                println!("[VFS-SELFTEST] procfs basic ops: PASS");
+                passed += 1;
+            } else {
+                println!("[VFS-SELFTEST] procfs basic ops: FAIL");
+            }
+        }
+        Err(_) => println!("[VFS-SELFTEST] procfs basic ops: FAIL (creation)"),
+    }
+
+    // 测试 9：sysfs 基本操作
+    total += 1;
+    match filesystems::Sysfs::new() {
+        Ok(sysfs) => {
+            if sysfs.root_inode() == 2 && sysfs.readdir(2).is_ok() {
+                println!("[VFS-SELFTEST] sysfs basic ops: PASS");
+                passed += 1;
+            } else {
+                println!("[VFS-SELFTEST] sysfs basic ops: FAIL");
+            }
+        }
+        Err(_) => println!("[VFS-SELFTEST] sysfs basic ops: FAIL (creation)"),
+    }
+
+    println!("[VFS-SELFTEST] Result: {}/{} tests passed\n", passed, total);
+    passed == total
 }

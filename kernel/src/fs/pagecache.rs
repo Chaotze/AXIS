@@ -6,7 +6,6 @@
 
 use crate::fs::vfs::{FileOffset, InodeNumber};
 use crate::lib::result::KernelResult;
-use alloc::boxed::Box;
 
 // ============================================================
 // 页结构
@@ -153,6 +152,36 @@ impl PageCache {
         self.stats.clone()
     }
 
+    /// 写入数据到缓存页
+    /// 为什么需要这个方法：内核向页缓存写入文件内容
+    pub fn write(&mut self, offset: FileOffset, data: &[u8]) -> KernelResult<usize> {
+        // 为什么检查大小：一个页的大小固定为 4096 字节
+        if data.len() > 4096 {
+            return Err(crate::lib::result::KernelError::InvalidArgument);
+        }
+
+        // 获取或创建缓存页
+        let idx = if let Some(idx) = self.page_map.get(&offset) {
+            *idx
+        } else {
+            let idx = PageIndex(self.pages.len());
+            let page = CachedPage::new(offset);
+            self.pages.push(page);
+            let _ = self.page_map.insert(offset, idx);
+            idx
+        };
+
+        // 写入数据到页
+        if let Some(page) = self.pages.get_mut(idx.0) {
+            page.data[..data.len()].copy_from_slice(data);
+            page.mark_dirty();
+            self.stats.writes += 1;
+            Ok(data.len())
+        } else {
+            Err(crate::lib::result::KernelError::InvalidArgument)
+        }
+    }
+
     /// 获取所有脏页
     pub fn get_dirty_pages(&self) -> alloc::vec::Vec<&CachedPage> {
         self.pages.iter()
@@ -223,16 +252,16 @@ mod tests {
     #[test]
     fn test_page_cache_insert_and_get() {
         let mut cache = PageCache::new(1);
-        let page = Arc::new(CachedPage::new(0));
+        let page = CachedPage::new(0);
 
-        cache.insert(0, page.clone());
+        cache.insert(0, page);
         assert!(cache.get(0).is_some());
     }
 
     #[test]
     fn test_page_cache_stats() {
         let mut cache = PageCache::new(1);
-        let page = Arc::new(CachedPage::new(0));
+        let page = CachedPage::new(0);
 
         cache.insert(0, page);
         cache.get(0);  // hit

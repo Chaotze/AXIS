@@ -112,7 +112,7 @@ pub struct Procfs {
 
 impl Procfs {
     /// 创建新的 procfs 实例
-    pub fn new() -> KernelResult<Self> {
+    pub fn new() -> KernelResult<alloc::sync::Arc<Self>> {
         let mut procfs = Procfs {
             nodes: Vec::new(),
             next_ino: 2,
@@ -145,7 +145,7 @@ impl Procfs {
             root.children.push((b"version".to_vec(), 6));
         }
 
-        Ok(procfs)
+        Ok(alloc::sync::Arc::new(procfs))
     }
 
     /// 获取节点
