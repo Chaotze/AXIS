@@ -268,18 +268,18 @@ AXIS/
 │       │   ├── vga.rs                          # VGA 文本模式底层支持 (共享写入器，供 print/panic 复用)
 │       │   ├── print.rs                        # 打印和日志函数 (基于 vga.rs 加锁输出)
 │       │   │
-│       │   ├── collections/                    # 数据结构库
+│       │   ├── collections/                    # 数据结构库 (存储由内核堆分配)
 │       │   │   ├── mod.rs
-│       │   │   ├── ring_buffer.rs              # 环形缓冲区 (定长循环缓冲)
-│       │   │   ├── btree.rs                    # B 树 (有序数据结构)
-│       │   │   ├── radix_tree.rs               # Radix 树 (高效的前缀树)
-│       │   │   ├── bitmap.rs                   # 位图 (高效的布尔数组)
-│       │   │   ├── lru.rs                      # LRU 缓存 (最近最少使用替换)
-│       │   │   └── lockfree/                   # 无锁并发数据结构 (高性能)
+│       │   │   ├── ring_buffer.rs              # 环形缓冲区 (堆支持循环缓冲)
+│       │   │   ├── btree.rs                    # B 树 (堆支持节点池，K_MAX/C_MAX 编译期定)
+│       │   │   ├── radix_tree.rs               # Radix 树 (堆支持节点池，固定扇出)
+│       │   │   ├── bitmap.rs                   # 位图 (堆支持，总位数构造时指定)
+│       │   │   ├── lru.rs                      # LRU 缓存 (堆支持，容量构造时指定)
+│       │   │   └── lockfree/                   # 无锁并发数据结构 (节点由调用方提供)
 │       │   │       ├── mod.rs
 │       │   │       ├── stack.rs                # 无锁栈 (LIFO 队列)
 │       │   │       ├── queue.rs                # 无锁队列 (FIFO 队列)
-│       │   │       └── hashmap.rs              # 无锁哈希表 (CAS 原子操作实现)
+│       │   │       └── hashmap.rs              # 无锁哈希表 (CAS 原子操作实现，容量构造时指定)
 │       │   │
 │       │   ├── string.rs                       # 字符串处理工具
 │       │   ├── hash.rs                         # 哈希函数库
