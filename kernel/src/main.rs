@@ -31,28 +31,47 @@ pub extern "C" fn _boot_rust() -> ! {
     println!("\n[INIT] Initializing architecture...");
     axis_kernel::arch::init();
 
+    // 延迟等待
+    axis_kernel::wait(5);
+
     // 内存管理初始化（物理内存 → 堆 → 虚拟内存）
     println!("\n[INIT] Initializing memory management...");
     axis_kernel::mm::init();
+
+    // 延迟等待
+    axis_kernel::wait(5);
 
     // 任务子系统初始化（任务表、调度器、进程树根）
     println!("\n[INIT] Initializing task subsystem...");
     axis_kernel::task::init();
 
+    // 延迟等待
+    axis_kernel::wait(5);
+
+    // 文件系统初始化（VFS、tmpfs、devfs、procfs、sysfs）
+    println!("\n[INIT] Initializing file system...");
+    axis_kernel::fs::init();
+
     // 系统就绪
     println!("\n[INIT] System initialized successfully!");
     println!("[INIT] Kernel is now running...");
 
+    axis_kernel::wait(5);
+    axis_kernel::lib::vga::clear_screen();
+
     // 再次打印启动 Banner
     print_banner();
+    println!("\nroot@axis:~$ _");
 
-    // 主循环
-    // 暂时只是挂起等待中断
-    loop {
+    // 延迟等待
+    for _ in 0..(1 + 1) * 5_000_000 {
         unsafe {
-            core::arch::asm!("hlt");
+            core::arch::asm!("pause");
         }
     }
+
+    // 启动 Shell
+    axis_kernel::fs::shell::shell_loop();
 }
 
 /// 打印启动 Banner

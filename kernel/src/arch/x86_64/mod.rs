@@ -26,10 +26,14 @@ pub mod context;
 /// - IDT 必须在启用中断之前设置好
 /// - APIC 初始化需要访问内存映射寄存器，可能依赖页表
 pub fn init() {
+    crate::wait(3);
     // 1. 检测并启用 CPU 特性
     unsafe {
         cpu::init();
     }
+
+    // 1.5. 等待一下，让用户看到输出
+    crate::wait(3);
 
     // 2. 设置 GDT 和 TSS
     gdt::init();

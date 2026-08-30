@@ -20,6 +20,7 @@ pub mod mount;
 pub mod file;
 pub mod filesystems;
 pub mod syscall;
+pub mod shell;
 
 // 重新导出常用类型
 pub use vfs::{
@@ -46,7 +47,7 @@ use crate::sync::Spinlock;
 /// 动态大小较大，Box 让它在堆上落位，锁内只存指针
 struct FileSystemState {
     /// 根文件系统实例
-    root_fs: Option<alloc::vec::Vec<u8>>,  // 占位符
+    root_fs: Option<alloc::sync::Arc<dyn vfs::FileSystem>>,
     /// 挂载表
     mount_table: MountTable,
     /// 全局 dentry 缓存
@@ -74,12 +75,17 @@ pub fn init() {
 
     // 创建并挂载文件系统
     // 为什么这样做：按优先级顺序挂载，tmpfs 作为根文件系统
+    let mut tmpfs_instance: Option<alloc::sync::Arc<dyn vfs::FileSystem>> = None;
+
     match filesystems::Tmpfs::new() {
         Ok(tmpfs) => {
             println!("[VFS] tmpfs created successfully");
+            tmpfs_instance = Some(tmpfs.clone());
+
             // 挂载到根目录（inode 2）
             let mut guard = VFS_STATE.lock();
             if let Some(state) = guard.as_mut() {
+                state.root_fs = Some(tmpfs.clone());
                 let _ = state.mount_table.mount(2, tmpfs, MountFlags::new(0), b"tmpfs");
             }
             drop(guard);
@@ -91,8 +97,18 @@ pub fn init() {
     match filesystems::Devfs::new() {
         Ok(devfs) => {
             println!("[VFS] devfs created successfully");
-            // 注意：在完整的系统中，/dev 目录应该先在 tmpfs 中创建
-            // 这里简化处理
+            // 在 tmpfs 中创建 /dev 目录，然后挂载 devfs
+            if let Some(ref tmpfs) = tmpfs_instance {
+                // 创建 /dev 目录
+                if let Ok(dev_ino) = tmpfs.mkdir(tmpfs.root_inode(), b"dev", FileMode::new(0o755)) {
+                    // 挂载 devfs 到 /dev
+                    let mut guard = VFS_STATE.lock();
+                    if let Some(state) = guard.as_mut() {
+                        let _ = state.mount_table.mount(dev_ino, devfs, MountFlags::new(0), b"devfs");
+                    }
+                    drop(guard);
+                }
+            }
         }
         Err(e) => println!("[VFS] Failed to create devfs: {:?}", e),
     }
@@ -101,6 +117,16 @@ pub fn init() {
     match filesystems::Procfs::new() {
         Ok(procfs) => {
             println!("[VFS] procfs created successfully");
+            // 在 tmpfs 中创建 /proc 目录，然后挂载 procfs
+            if let Some(ref tmpfs) = tmpfs_instance {
+                if let Ok(proc_ino) = tmpfs.mkdir(tmpfs.root_inode(), b"proc", FileMode::new(0o755)) {
+                    let mut guard = VFS_STATE.lock();
+                    if let Some(state) = guard.as_mut() {
+                        let _ = state.mount_table.mount(proc_ino, procfs, MountFlags::new(0), b"procfs");
+                    }
+                    drop(guard);
+                }
+            }
         }
         Err(e) => println!("[VFS] Failed to create procfs: {:?}", e),
     }
@@ -109,6 +135,16 @@ pub fn init() {
     match filesystems::Sysfs::new() {
         Ok(sysfs) => {
             println!("[VFS] sysfs created successfully");
+            // 在 tmpfs 中创建 /sys 目录，然后挂载 sysfs
+            if let Some(ref tmpfs) = tmpfs_instance {
+                if let Ok(sys_ino) = tmpfs.mkdir(tmpfs.root_inode(), b"sys", FileMode::new(0o755)) {
+                    let mut guard = VFS_STATE.lock();
+                    if let Some(state) = guard.as_mut() {
+                        let _ = state.mount_table.mount(sys_ino, sysfs, MountFlags::new(0), b"sysfs");
+                    }
+                    drop(guard);
+                }
+            }
         }
         Err(e) => println!("[VFS] Failed to create sysfs: {:?}", e),
     }

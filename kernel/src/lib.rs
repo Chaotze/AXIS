@@ -45,3 +45,18 @@ pub mod lib;
 
 // 重新导出常用类型和宏
 pub use prelude::*;
+
+// 工具函数
+pub fn wait(timeout_s: u64) {
+    // print!("\n[SHELL] Pausing for {} seconds ", timeout_s);
+
+    for i in 0..(timeout_s + 1) * 5_000_000 {
+        if i % 5_000_000 == 0 && i > 0 {
+            print!(".");
+        }
+        unsafe {
+            core::arch::asm!("pause");
+        }
+    }
+    println!();
+}
