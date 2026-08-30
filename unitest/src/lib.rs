@@ -14,6 +14,41 @@
 
 extern crate alloc;
 
+pub mod lib {
+    #[path = "../../../kernel/src/lib/bit.rs"]
+    pub mod bit;
+    #[path = "../../../kernel/src/lib/crc.rs"]
+    pub mod crc;
+    #[path = "../../../kernel/src/lib/hash.rs"]
+    pub mod hash;
+    #[path = "../../../kernel/src/lib/string.rs"]
+    pub mod string;
+    #[path = "../../../kernel/src/lib/time.rs"]
+    pub mod time;
+}
+
+pub mod collections {
+    // #[path = "../../../kernel/src/lib/collections/bitmap.rs"]
+    // pub mod bitmap;
+    #[path = "../../../kernel/src/lib/collections/btree.rs"]
+    pub mod btree;
+    // #[path = "../../../kernel/src/lib/collections/lru.rs"]
+    // pub mod lru;
+    #[path = "../../../kernel/src/lib/collections/radix_tree.rs"]
+    pub mod radix_tree;
+    #[path = "../../../kernel/src/lib/collections/ring_buffer.rs"]
+    pub mod ring_buffer;
+}
+
+pub mod lockfree {
+    // #[path = "../../../kernel/src/lib/collections/lockfree/hashmap.rs"]
+    // pub mod hashmap;
+    #[path = "../../../kernel/src/lib/collections/lockfree/queue.rs"]
+    pub mod queue;
+    #[path = "../../../kernel/src/lib/collections/lockfree/stack.rs"]
+    pub mod stack;
+}
+
 pub mod pmm {
     #[path = "../../../kernel/src/mm/pmm/buddy.rs"]
     pub mod buddy;

@@ -320,7 +320,6 @@ fn bucket_name(size: usize) -> &'static str {
     }
 }
 
-// ---------- 宿主单元测试（通过 unitest crate 以 #[path] 方式编译运行） ----------
 #[cfg(test)]
 mod tests {
     use super::*;
