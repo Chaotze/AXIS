@@ -10,6 +10,7 @@
 #   .\axis run       - 在 QEMU 中运行可引导的 BIOS 镜像
 #   .\axis clean     - 清理构建产物
 #   .\axis rebuild   - 清理构建产物后构建并运行 BIOS 镜像
+#   .\axis test      - 运行单元测试
 #   .\axis help      - 显示帮助信息
 
 param(
@@ -102,7 +103,7 @@ function Invoke-Build {
     # 创建磁盘镜像（0.25MB）
     $imgSize = 0.25 * 1024 * 1024
     $bytes = New-Object byte[] $imgSize
-    $imgPath = Join-Path $axisPath "target\axis-0.1.1-bios-x86_64.img"
+    $imgPath = Join-Path $axisPath "target\axis-0.1.2-bios-x86_64.img"
     [System.IO.File]::WriteAllBytes($imgPath, $bytes)
     Write-Info "Image file created: $imgPath"
 
@@ -141,7 +142,7 @@ function Invoke-Run {
     $qemuCmdParts = @(
         'qemu-system-x86_64',
         '-cpu max',
-        '-drive format=raw,file=target\axis-0.1.1-bios-x86_64.img',
+        '-drive format=raw,file=target\axis-0.1.2-bios-x86_64.img',
         '-display curses',
         '-m 128M -no-reboot -no-shutdown'
     )
@@ -149,8 +150,13 @@ function Invoke-Run {
     wt -w 0 new-tab `
         -d . `
         -p "Windows PowerShell" `
-        --title "axis-0.1.1-bios-x86_64" `
+        --title "axis-0.1.2-bios-x86_64" `
         -- powershell -NoExit -Command "& { $qemuCmd }"
+}
+
+# 单元测试
+function Invoke-Test {
+    cargo test --package unitest --lib
 }
 
 # 帮助信息
@@ -163,6 +169,7 @@ function Invoke-Help {
 	Write-Info "  .\axis run      - Launch the previously built BIOS image in QEMU"
 	Write-Info "  .\axis clean    - Remove all build artifacts"
 	Write-Info "  .\axis rebuild  - Fully rebuild: clean + build + run"
+	Write-Info "  .\axis test     - Run unit tests"
 	Write-Info "  .\axis help     - Show this help message"
 }
 
@@ -186,6 +193,9 @@ function Main {
             New-Item -ItemType Directory -Force -Path "target\x86_64-unknown-bios" | Out-Null
             Invoke-Build
             Invoke-Run
+        }
+        "test" {
+            Invoke-Test
         }
         "help" {
             Invoke-Help

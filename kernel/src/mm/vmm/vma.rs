@@ -253,19 +253,10 @@ impl VmaManager {
 
     /// 查找包含 addr 的区域（可变）
     pub fn find_mut(&mut self, addr: usize) -> Option<&mut Vma> {
-        let i = self.insertion_point(addr);
-        if i < self.vmas.len() {
-            let (lo, hi) = self.vmas.split_at_mut(i);
-            let v = &mut hi[0];
-            if v.contains(addr) {
-                return Some(v);
-            }
-            let _ = lo;
-        }
-        if i > 0 {
-            return self.vmas.get_mut(i - 1).filter(|v| v.contains(addr));
-        }
-        None
+        // 先找到索引
+        let idx = self.vmas.binary_search_by(|v| v.start.cmp(&addr)).ok()?;
+        // 然后获取可变引用
+        self.vmas.get_mut(idx).filter(|v| v.contains(addr))
     }
 
     /// 查找覆盖 [s, e) 的区域下标（假设不变量成立时至多一个）

@@ -12,7 +12,7 @@
 # 这些目录必须包含 Cargo.toml 文件，且位于工作区根目录下
 # 工作区还支持隐式成员：如果根目录下有子目录包含 Cargo.toml，
 # 且没有被显式列出，可以使用 "members = ["*"]" 自动发现
-members = ["bootloader/bios", "bootloader/uefi", "kernel"]
+members = ["bootloader/bios", "bootloader/uefi", "kernel", "unitest"]
 
 # resolver: 依赖解析器版本
 # 解析器版本的区别：
@@ -47,7 +47,7 @@ authors = ["Haoze Qin", "Borui Li", "Zhi Zheng"]
 #   - 当进行不兼容的 API 变更时升级 MAJOR 版本
 #   - 添加新功能但保持兼容时升级 MINOR 版本
 #   - 修复 bug 而不改变功能时升级 PATCH 版本
-version = "0.1.1"
+version = "0.1.2"
 
 # edition: 定义所有成员包使用的 Rust 版本
 edition = "2024"

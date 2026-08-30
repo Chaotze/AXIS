@@ -10,6 +10,7 @@
 #   ./axis run       - 在 QEMU 中运行可引导的 BIOS 镜像
 #   ./axis clean     - 清理构建产物
 #   ./axis rebuild   - 清理构建产物后构建并运行 BIOS 镜像
+#   ./axis test      - 运行单元测试
 #   ./axis help      - 显示帮助信息
 
 set -e  # 遇到错误立即退出
@@ -94,7 +95,7 @@ build() {
     info "Creating disk image..."
 
     # 创建磁盘镜像（0.25MB）
-    IMG_PATH="target/axis-0.1.1-bios-x86_64.img"
+    IMG_PATH="target/axis-0.1.2-bios-x86_64.img"
     dd if=/dev/zero of="$IMG_PATH" bs=1024 count=256 2>/dev/null
     info "Image file created: $IMG_PATH"
 
@@ -126,7 +127,7 @@ run() {
     qemu_args=(
         qemu-system-x86_64
         -cpu max
-        -drive format=raw,file=target/axis-0.1.1-bios-x86_64.img
+        -drive format=raw,file=target/axis-0.1.2-bios-x86_64.img
         -display curses
         -m 128M -no-reboot -no-shutdown
     )
@@ -136,10 +137,15 @@ run() {
         @ launch
         --type=tab
         --cwd=current
-        --title="axis-0.1.1-bios-x86_64"
+        --title="axis-0.1.2-bios-x86_64"
         -- bash -c "$qemu_cmd; exec bash"
     )
     kitty "${kitty_args[@]}"
+}
+
+# 单元测试
+test() {
+    cargo test --package unitest --lib
 }
 
 # 帮助信息
@@ -152,6 +158,7 @@ help() {
 	info "  ./axis run      - Launch the previously built BIOS image in QEMU"
 	info "  ./axis clean    - Remove all build artifacts"
 	info "  ./axis rebuild  - Fully rebuild: clean + build + run"
+	info "  ./axis test     - Run unit tests"
 	info "  ./axis help     - Show this help message"
 }
 
@@ -175,6 +182,9 @@ main() {
             mkdir -p target/x86_64-unknown-bios
             build
             run
+            ;;
+        test)
+            test
             ;;
         help)
             help
