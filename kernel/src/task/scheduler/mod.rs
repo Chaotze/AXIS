@@ -41,7 +41,7 @@ pub struct Scheduler<const MAX_TASKS: usize, const MAX_NODES: usize> {
 
 impl<const MAX_TASKS: usize, const MAX_NODES: usize> Scheduler<MAX_TASKS, MAX_NODES> {
     /// 创建调度器（初始无当前任务）
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             runqueue: CfsRunqueue::new(),
             current: INVALID_TID,

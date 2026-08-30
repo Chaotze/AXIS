@@ -59,7 +59,7 @@ impl ProcessState {
 }
 
 /// 进程控制块
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ProcessControlBlock {
     /// 进程号（= 任务表槽位，见 process.rs）
     pub pid: Pid,

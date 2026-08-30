@@ -21,18 +21,18 @@ use super::super::super::lib::collections::bitmap::Bitmap;
 
 /// CPU 亲和掩码（1 bit 对应 1 个 CPU）
 ///
-/// 内嵌 lib 的 Bitmap（已实现 Copy/Clone/Debug，见
-/// bitmap.rs 的说明），本类型随之可整体按值复制
-#[derive(Debug, Clone, Copy)]
+/// 内嵌 lib 的 Bitmap（已实现 Clone/Debug），本类型随之
+/// 可按值复制
+#[derive(Debug, Clone)]
 pub struct CpuMask<const WORDS: usize> {
-    bits: Bitmap<WORDS>,
+    bits: Bitmap,
 }
 
 impl<const WORDS: usize> CpuMask<WORDS> {
     /// 空掩码（不绑定任何 CPU = 非法状态，需调用方随后设置）
-    pub const fn none() -> Self {
+    pub fn none() -> Self {
         Self {
-            bits: Bitmap::new(),
+            bits: Bitmap::new(WORDS * usize::BITS as usize),
         }
     }
 

@@ -124,14 +124,14 @@ impl VrKey {
 
 /// CFS 就绪队列（定长 B 树，键 = VrKey，值 = Tid）
 pub struct CfsRunqueue<const MAX_TASKS: usize, const MAX_NODES: usize> {
-    tree: BTreeMap<VrKey, Tid, 3, 4, MAX_NODES>,
+    tree: BTreeMap<VrKey, Tid, 3, 4>,
     /// 已入队任务数
     len: usize,
 }
 
 impl<const MAX_TASKS: usize, const MAX_NODES: usize> CfsRunqueue<MAX_TASKS, MAX_NODES> {
     /// 创建空就绪队列
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         // 2-3-4 树最坏节点数 < 2×键数（每节点至少 1 键），
         // 留 8 个余量防边界
         assert!(MAX_NODES >= 2 * MAX_TASKS + 8, "MAX_NODES 不足：至少 2*MAX_TASKS+8");
@@ -315,12 +315,12 @@ mod tests {
         let (heavy_w, light_w) = (nice_to_weight(-5), nice_to_weight(5));
         let (mut heavy_vr, mut light_vr) = (0u64, 0u64);
 
-        let mut run_heavy = |rq: &mut CfsRunqueue<4, 16>, vr: &mut u64| {
+        let run_heavy = |rq: &mut CfsRunqueue<4, 16>, vr: &mut u64| {
             let key = VrKey::new(*vr, 1);
             *vr += calc_vruntime_delta(12, heavy_w);
             let _ = rq.requeue(key, 1, *vr);
         };
-        let mut run_light = |rq: &mut CfsRunqueue<4, 16>, vr: &mut u64| {
+        let run_light = |rq: &mut CfsRunqueue<4, 16>, vr: &mut u64| {
             let key = VrKey::new(*vr, 2);
             *vr += calc_vruntime_delta(12, light_w);
             let _ = rq.requeue(key, 2, *vr);

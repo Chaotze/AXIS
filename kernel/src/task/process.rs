@@ -34,6 +34,8 @@
 
 // 对外重导出进程号类型（task/mod.rs 等装配层使用）
 pub use super::pcb::{Pid, INVALID_PID};
+use alloc::vec;
+use alloc::vec::Vec;
 use super::pcb::{ProcessControlBlock, ProcessState};
 use super::signal::{self, SignalSet};
 use super::super::lib::collections::bitmap::Bitmap;
@@ -51,9 +53,9 @@ pub const IDLE_PID: Pid = 0;
 ///   稳定版 Rust 不支持 const 泛型算术，故显式传入）
 pub struct ProcessTable<const MAX_TASKS: usize, const BITMAP_WORDS: usize> {
     /// 任务槽位（pid = 下标；None = 空闲）
-    slots: [Option<ProcessControlBlock>; MAX_TASKS],
+    slots: Vec<Option<ProcessControlBlock>>,
     /// 槽位占用位图（1 = 已用）
-    used: Bitmap<BITMAP_WORDS>,
+    used: Bitmap,
     /// 线性分配提示（从上次分配点继续找，减少扫描）
     next_hint: usize,
     /// 存活任务数（含 Zombie）
@@ -62,11 +64,11 @@ pub struct ProcessTable<const MAX_TASKS: usize, const BITMAP_WORDS: usize> {
 
 impl<const MAX_TASKS: usize, const BITMAP_WORDS: usize> ProcessTable<MAX_TASKS, BITMAP_WORDS> {
     /// 创建空表
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         assert!(BITMAP_WORDS * 64 >= MAX_TASKS, "位图字数不足以覆盖任务槽位");
         Self {
-            slots: [None; MAX_TASKS],
-            used: Bitmap::new(),
+            slots: vec![None; MAX_TASKS],
+            used: Bitmap::new(MAX_TASKS),
             next_hint: 0,
             len: 0,
         }
@@ -124,13 +126,13 @@ impl<const MAX_TASKS: usize, const BITMAP_WORDS: usize> ProcessTable<MAX_TASKS, 
     /// 重置：新 pid、parent、进程树链、状态、退出码、
     /// 信号挂起集、调度记账（vruntime/时间片/CPU）。
     pub fn fork(&mut self, parent_pid: Pid) -> Result<Pid, &'static str> {
-        let parent = *self.get(parent_pid).ok_or("父进程不存在")?;
+        let parent = self.get(parent_pid).ok_or("父进程不存在")?.clone();
         if !parent.is_alive() {
             return Err("父进程已退出");
         }
 
         let child_pid = self.alloc_slot()?;
-        let mut child = parent; // Copy：完整复制进程控制块
+        let mut child = parent; // Clone：完整复制进程控制块
 
         // 身份与树关系重置
         child.pid = child_pid;
@@ -313,7 +315,7 @@ impl<const MAX_TASKS: usize, const BITMAP_WORDS: usize> ProcessTable<MAX_TASKS, 
                 .map(|c| c.parent == pid)
                 .unwrap_or(false);
             if is_child {
-                let mut c = *self.get(i as Pid).unwrap();
+                let mut c = self.get(i as Pid).unwrap().clone();
                 c.parent = INIT_PID;
                 c.next_sibling = INVALID_PID;
                 self.slots[i] = Some(c);

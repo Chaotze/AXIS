@@ -39,7 +39,7 @@ pub enum ThreadState {
 }
 
 /// 线程描述符（调度实体）
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct Thread {
     /// 线程号
     pub tid: Tid,
@@ -79,7 +79,7 @@ impl Thread {
     ///
     /// 默认态：Ready、vruntime 为 0、nice 为 0（由 CFS
     /// 的权重表映射到 NICE_0_LOAD）、亲和全掩码。
-    pub const fn new(tid: Tid, pid: super::pcb::Pid) -> Self {
+    pub fn new(tid: Tid, pid: super::pcb::Pid) -> Self {
         Self {
             tid,
             pid,
@@ -89,7 +89,7 @@ impl Thread {
             nice: 0,
             ticks_left: 0,
             need_resched: false,
-            affinity: CpuMask::none(),
+            affinity: CpuMask::all(),
             kernel_stack: 0,
             trap_frame: 0,
         }

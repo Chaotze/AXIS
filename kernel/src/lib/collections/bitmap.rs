@@ -23,8 +23,8 @@ use super::super::bit::{self, BitIter};
 /// Copy/Clone：存储就是 usize 数组，按位复制语义正确，
 /// 使位图可作为结构体字段参与按值复制（如 CpuMask、
 /// 任务槽位表），避免不必要的引用计数
-#[derive(Debug, Clone, Copy)]
-pub struct Bitmap<const WORDS: usize> {
+#[derive(Debug, Clone)]
+pub struct Bitmap {
     /// 位存储：从 words[0] 的最低位开始线性编号
     words: Vec<usize>,
     /// 总位数（可能不满最后一个机器字）
