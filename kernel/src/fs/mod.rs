@@ -18,10 +18,7 @@ pub mod dcache;
 pub mod pagecache;
 pub mod mount;
 pub mod file;
-
-// 后续模块
-// pub mod filesystems;
-// pub mod syscall;
+pub mod filesystems;
 
 // 重新导出常用类型
 pub use vfs::{
