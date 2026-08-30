@@ -94,9 +94,9 @@ build() {
     ############################################################
     info "Creating disk image..."
 
-    # 创建磁盘镜像（0.25MB）
+    # 创建磁盘镜像（0.5MB，1024 扇区）
     IMG_PATH="target/axis-0.1.2-bios-x86_64.img"
-    dd if=/dev/zero of="$IMG_PATH" bs=1024 count=256 2>/dev/null
+    dd if=/dev/zero of="$IMG_PATH" bs=1024 count=512 2>/dev/null
     info "Image file created: $IMG_PATH"
 
     # 写入 Stage1（MBR）

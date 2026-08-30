@@ -143,6 +143,40 @@ impl<K: Ord + Copy, V: Copy, const K_MAX: usize, const C_MAX: usize>
         self.get(key).is_some()
     }
 
+    /// 返回最小键值对（树的最左侧叶子）
+    ///
+    /// 为什么需要这个接口：
+    /// - CFS 调度器把就绪队列实现为"以 vruntime 为键的
+    ///   B 树"，取队首（vruntime 最小者）是最热路径；
+    ///   每次用 visit 全量遍历取第一个是 O(N)，接口化后
+    ///   只需沿最左孩子下降，O(树高)
+    pub fn first(&self) -> Option<(&K, &V)> {
+        let mut node = self.root?;
+        // 沿最左孩子下降到叶子（中序首元素必在最左叶子）
+        while !self.is_leaf(node) {
+            node = self.child_at(node, 0)?;
+        }
+        if self.key_count(node) == 0 {
+            return None; // 空树（根无键）
+        }
+        Some((self.key_ref(node, 0), self.val_ref(node, 0)))
+    }
+
+    /// 返回最大键值对（树的最右侧叶子）
+    pub fn last(&self) -> Option<(&K, &V)> {
+        let mut node = self.root?;
+        // 沿最右孩子下降到叶子
+        while !self.is_leaf(node) {
+            let count = self.key_count(node);
+            node = self.child_at(node, count)?;
+        }
+        let count = self.key_count(node);
+        if count == 0 {
+            return None;
+        }
+        Some((self.key_ref(node, count - 1), self.val_ref(node, count - 1)))
+    }
+
     /// 插入键值对；键已存在时替换并返回旧值
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
         match self.root {
@@ -283,6 +317,11 @@ impl<K: Ord + Copy, V: Copy, const K_MAX: usize, const C_MAX: usize>
     #[inline]
     fn val_at(&self, node: u32, i: usize) -> V {
         unsafe { (self.node_ref(node).vals.as_ptr() as *const V).add(i).read() }
+    }
+
+    #[inline]
+    fn key_ref(&self, node: u32, i: usize) -> &K {
+        unsafe { &*(self.node_ref(node).keys.as_ptr() as *const K).add(i) }
     }
 
     #[inline]
@@ -868,5 +907,26 @@ mod tests {
             assert_eq!(tree.remove(&i), Some(i));
         }
         assert!(tree.is_empty());
+    }
+
+    #[test]
+    fn test_first_last() {
+        let mut tree: TestTree = BTreeMap::new();
+        assert_eq!(tree.first(), None);
+        assert_eq!(tree.last(), None);
+
+        // 乱序插入后 first/last 必须是最小/最大键
+        for &k in &[7u32, 3, 15, 1, 9, 13, 5] {
+            tree.insert(k, k * 10);
+        }
+        assert_eq!(tree.first(), Some((&1, &10)));
+        assert_eq!(tree.last(), Some((&15, &150)));
+
+        // 树长高后依然正确（跨越多个节点）
+        for i in 16..64u32 {
+            tree.insert(i, i);
+        }
+        assert_eq!(tree.first(), Some((&1, &10)));
+        assert_eq!(tree.last(), Some((&63, &63)));
     }
 }

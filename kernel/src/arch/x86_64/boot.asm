@@ -371,5 +371,10 @@ section .bss
 align 16
 
 boot_stack_bottom:
-    resb 0x10000              ; 64KB 引导栈
+    ; 256KB 引导栈
+    ; 为什么从 64KB 增大：mm 自测（COW/交换）与未来的任务
+    ; 子系统初始化调用链较深，64KB 在深层嵌套时余量不足；
+    ; 栈溢出会静默破坏相邻 .bss 数据（如 Vec 元数据），
+    ; 表现为难以定位的空指针缺页
+    resb 0x40000
 boot_stack_top:

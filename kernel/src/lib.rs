@@ -27,6 +27,9 @@ pub mod sync;
 // 内存管理（物理 / 虚拟 / 堆）
 pub mod mm;
 
+// 进程和线程管理（PCB、生命周期、信号、调度、命名空间、cgroup）
+pub mod task;
+
 // 库函数模块（打印、字符串、哈希、CRC、位操作、
 // 错误类型、时间、调试以及定长 collections 数据结构）
 //

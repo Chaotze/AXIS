@@ -1,4 +1,4 @@
-﻿#
+#
 # ============================================================
 # AXIS 构建脚本（Windows PowerShell）
 # ============================================================
@@ -100,8 +100,8 @@ function Invoke-Build {
     ############################################################
     Write-Info "Creating disk image..."
 
-    # 创建磁盘镜像（0.25MB）
-    $imgSize = 0.25 * 1024 * 1024
+    # 创建磁盘镜像（0.5MB，1024 扇区）
+    $imgSize = 0.5 * 1024 * 1024
     $bytes = New-Object byte[] $imgSize
     $imgPath = Join-Path $axisPath "target\axis-0.1.2-bios-x86_64.img"
     [System.IO.File]::WriteAllBytes($imgPath, $bytes)

@@ -79,7 +79,7 @@ load_stage2:
     call print_string
 
     ; 读取内核到 0x10000（LBA 模式，扩展 INT 13H）
-    ; 内核映像最大 192KB，分 3 次读入，每次 128 扇区（64KB）
+    ; 内核映像最大 384KB，分 6 次读入，每次 128 扇区（64KB）
     ;
     ; 为什么必须分块：
     ;   - BIOS INT 13h AH=42 的单次传输不能跨越 64KB 边界，
@@ -87,10 +87,10 @@ load_stage2:
     ;     缓冲区从 0x10000 起，一次最多只能传 64KB（128 扇区）
     ;   - 因此每轮读 128 扇区到 64KB 对齐的缓冲区，读完后把
     ;     DAP 中的目标段（+0x1000 即地址 +64KB）和起始 LBA（+128）
-    ;     各前进一格，共循环 3 次（3 × 64KB = 192KB）
+    ;     各前进一格，共循环 6 次（6 × 64KB = 384KB）
     ;   - 注意：BIOS 调用不保证保留 SI/CX 等寄存器，
     ;     所以每轮都重新加载 DAP 指针，循环计数放在内存变量中
-    mov byte [kernel_read_blocks], 3
+    mov byte [kernel_read_blocks], 6
 .read_kernel_block:
     mov si, disk_address_packet_kernel
     mov ah, 0x42
@@ -236,7 +236,7 @@ gdt_descriptor:
 ; 数据区
 ; ------------------------------------------------------------
 boot_drive:         db 0                        ; 启动驱动器号
-kernel_read_blocks: db 3                        ; 内核分块读取的剩余块数（每次开机初始化为 3）
+kernel_read_blocks: db 6                        ; 内核分块读取的剩余块数（每次开机初始化为 6）
 msg_loading_stage2: db "Stage1: Loading stage2...", 13, 10, 0
 msg_loading_kernel: db "Stage1: Loading kernel...", 13, 10, 0
 msg_disk_error:     db "Stage1: Disk read error!", 13, 10, 0
@@ -244,10 +244,10 @@ disk_address_packet_kernel:
     db 0x10                 ; 包大小（16字节）
     db 0                    ; 保留（必须为0）
     dw 0x0080               ; 每次读取的扇区数（128个扇区 = 64KB）
-                            ; 注意：内核映像最大 192KB = 3 块，由
-                            ; load_stage2 的循环分 3 次读入；每轮读完后
+                            ; 注意：内核映像最大 384KB = 6 块，由
+                            ; load_stage2 的循环分 6 次读入；每轮读完后
                             ; 循环会将本 DAP 的目标段与起始 LBA 前移，
-                            ; 最后两块依次读入 0x20000 与 0x30000
+                            ; 后续各块依次读入 0x20000、0x30000 ……
     dw 0x0000               ; 目标地址偏移量（16位）
     dw 0x1000               ; 目标地址段（0x1000:0x0000 = 0x10000）
     dq 128                  ; LBA 起始扇区（第一块从 128 开始）
