@@ -11,8 +11,9 @@
 // - 队列恒有一个不携带数据的哨兵节点，使"判空"退化为
 //   单指针判断（head.next == null），避免头尾指针同为
 //   null 时的多情况处理；这也是 Michael-Scott 原文的设计
-// - 哨兵由调用方提供（无动态分配器环境的惯例），
-//   dequeue 永远不会返回哨兵本身
+// - 哨兵由调用方提供（无锁队列节点同样不负责回收，
+//   可从静态数组或 slab 池取出），dequeue 永远不会
+//   返回哨兵本身
 //
 // 为什么 tail 允许滞后：
 // - enqueue 分为两步：把新节点链到队尾、再推进 tail；
@@ -76,8 +77,11 @@ impl<T> Queue<T> {
             (*node).next.store(ptr::null_mut(), Ordering::Relaxed);
         }
 
-        let tail = self.tail.load(Ordering::Acquire);
         loop {
+            // 每轮重读 tail：CAS 失败或 tail 滞后时，必须从
+            // 最新队尾重新出发（否则会解引用已被别人推后/出队的
+            // 节点，造成悬垂访问）
+            let tail = self.tail.load(Ordering::Acquire);
             let next = unsafe { (*tail).next.load(Ordering::Acquire) };
             if next.is_null() {
                 // 尾节点没有后继：尝试把新节点挂上
@@ -100,7 +104,7 @@ impl<T> Queue<T> {
                     );
                     return;
                 }
-                // 挂载失败：有并发者抢先，重读 next 重试
+                // 挂载失败：有并发者抢先，重读 tail 重试
             } else {
                 // tail 滞后：帮忙推进再重试
                 let _ = self.tail.compare_exchange_weak(
@@ -115,22 +119,26 @@ impl<T> Queue<T> {
 
     /// 出队；队列为空返回 None（不返回哨兵）
     pub fn dequeue(&self) -> Option<*mut Node<T>> {
-        let head = self.head.load(Ordering::Acquire);
+        let mut head = self.head.load(Ordering::Acquire);
         loop {
             let next = unsafe { (*head).next.load(Ordering::Acquire) };
             if next.is_null() {
                 return None; // 只有哨兵：队列为空
             }
-            // 推进 head 到后继；失败说明并发者已推进，重试
-            if self
+            // 推进 head 到后继；失败说明并发者已推进，必须用
+            // 失败返回的实际 head 重试——否则会继续解引用已被
+            // 出队的旧 head（其内容可能已被回收，悬垂访问）
+            match self
                 .head
                 .compare_exchange_weak(head, next, Ordering::Acquire, Ordering::Relaxed)
-                .is_ok()
             {
-                // 返回数据节点；哨兵节点留在队中
-                // （旧哨兵变成"垃圾节点"，由调用方在合适时机
-                // 复用或回收——内核无分配器下的惯例）
-                return Some(next);
+                Ok(_) => {
+                    // 返回数据节点；哨兵节点留在队中
+                    // （旧哨兵变成"垃圾节点"，由调用方在合适时机
+                    // 复用或回收——内核无锁队列的惯例）
+                    return Some(next);
+                }
+                Err(actual) => head = actual,
             }
         }
     }
@@ -200,18 +208,30 @@ mod tests {
         for _ in 0..2 {
             let queue = Arc::clone(&queue);
             let dequeued = Arc::clone(&dequeued);
-            consumers.push(thread::spawn(move || {
+            // 出队的节点先收集，不立即回收：无锁结构的延迟回收
+            // 约定——其他线程可能仍持有指向该节点的旧队头指针
+            consumers.push(thread::spawn(move || -> std::vec::Vec<usize> {
+                let mut collected = std::vec::Vec::new();
                 while let Some(node) = queue.dequeue() {
-                    unsafe { drop(Box::from_raw(node)) };
+                    collected.push(node as usize);
                     dequeued.fetch_add(1, Ordering::AcqRel);
                 }
+                collected
             }));
         }
+        // 先等待全部出队线程结束（join 同时同步计数），
+        // 再断言：此时节点仍存活，判空可安全解引用队首 next
+        let mut drained = std::vec::Vec::new();
         for c in consumers {
-            c.join().unwrap();
+            drained.extend(c.join().unwrap());
         }
-
         assert_eq!(dequeued.load(Ordering::Acquire), 600);
         assert!(queue.is_empty());
+
+        // 最后统一回收节点（无锁结构的延迟回收约定）
+        for addr in drained {
+            unsafe { drop(Box::from_raw(addr as *mut Node<usize>)) };
+        }
     }
 }
+

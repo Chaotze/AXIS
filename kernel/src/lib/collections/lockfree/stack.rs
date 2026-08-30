@@ -9,8 +9,9 @@
 //   （如 SLUB 的 per-CPU 空闲链表、空闲页帧栈）
 //
 // 为什么节点由调用方提供（裸指针接口）：
-// - 内核尚无动态分配器，节点从调用方的静态数组/slab
-//   池取出；栈只维护指针链接，不拥有节点
+// - 无锁栈不负责节点回收（ABA 风险见下）：节点由调用方从
+//   静态数组或 slab/kmem_cache 池取出，栈只维护指针链接，
+//   不拥有节点
 // - 裸指针接口是无锁结构在 C 内核中的标准形态（如
 //   Linux 的 llist），避免所有权语义与并发语义纠缠
 //
@@ -146,7 +147,7 @@ mod tests {
     #[test]
     fn test_concurrent_push_pop() {
         // 两个线程各压入 500 个节点，另两个线程全部弹出；
-        // 用每节点标记检测重复弹出（正确性），用计数检测丢失
+        // 用计数守恒检测丢失/重复弹出（正确性烟雾测试）
         let stack: Arc<Stack<usize>> = Arc::new(Stack::new());
         let popped = Arc::new(AtomicUsize::new(0));
 
@@ -168,21 +169,31 @@ mod tests {
         for _ in 0..2 {
             let stack = Arc::clone(&stack);
             let popped = Arc::clone(&popped);
-            consumers.push(thread::spawn(move || {
+            // 出栈的节点先收集，不立即回收：无锁结构的延迟回收
+            // 约定——其他线程可能仍持有指向该节点的旧栈顶指针
+            consumers.push(thread::spawn(move || -> std::vec::Vec<usize> {
+                let mut collected = std::vec::Vec::new();
                 while let Some(node) = stack.pop() {
-                    // 收回节点所有权（测试环境用 Box 分配）
-                    unsafe { drop(Box::from_raw(node)) };
+                    collected.push(node as usize);
                     popped.fetch_add(1, Ordering::AcqRel);
                 }
+                collected
             }));
         }
+        // 先等待全部出栈线程结束（join 同时同步计数），
+        // 再断言，最后统一回收节点（无锁结构的延迟回收约定）
+        let mut drained = std::vec::Vec::new();
         for c in consumers {
-            c.join().unwrap();
+            drained.extend(c.join().unwrap());
         }
-
         // 1000 次 push 必须恰好 1000 次 pop 且栈为空：
         // 若节点被重复弹出，必伴随另一次弹出丢失（总数不符）
         assert_eq!(popped.load(Ordering::Acquire), 1000);
         assert!(stack.is_empty());
+
+        for addr in drained {
+            unsafe { drop(Box::from_raw(addr as *mut Node<usize>)) };
+        }
     }
 }
+
