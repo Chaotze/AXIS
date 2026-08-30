@@ -1,26 +1,27 @@
 // ============================================================
-// LRU 缓存（最近最少使用替换，定长）
+// LRU 缓存（最近最少使用替换，堆支持）
 // ============================================================
-// 固定容量的键值缓存，容量满时淘汰"最久未被访问"的条目。
+// 容量在构造时指定的键值缓存，容量满时淘汰"最久未被访问"的条目。
 //
 // 为什么内核需要 LRU：
 // - 页缓存淘汰、目录项缓存（dcache）、连接表等场景都要
 //   回答"满了踢谁"；LRU 利用时间局部性是普适的默认答案
 //
-// 为什么设计为定长（const 泛型 CAP/MAP_CAP）：
-// - 无动态分配器：条目槽位数组 + 哈希槽位数组全部内嵌，
-//   容量在编译期确定（如"256 条目的 dcache"）
-// - MAP_CAP 独立成参的原因：Rust 稳定版不支持对 const 泛型
-//   做算术（CAP*2）作为数组长度，且开放寻址必须保留空槽
-//   终止探测，MAP_CAP 必须大于 CAP（建议 2 倍）
+// 为什么由定长改为堆支持：
+// - lib 最初是定长版本（const 泛型 CAP/MAP_CAP，条目槽位数组与
+//   哈希槽位数组全部内嵌）：内核尚无动态分配器
+// - mm 落地后存储迁到堆上（Vec），容量在构造时指定（运行期
+//   决定，如"256 条目的 dcache"只需 with_capacity(256)）
+// - 哈希表大小固定取 2×容量：开放寻址必须保留空槽终止探测，
+//   2 倍容量使装载率 ≤ 50%，探测必然终止
 //
 // 为什么用"哈希表 + 双向链表"双结构：
 // - 哈希表负责 O(1) 定位；双向链表按"最近使用"排序，
 //   head 为最新、tail 为最旧，淘汰/提升都是 O(1) 指针操作
-// - 链表用槽位下标（而非指针）链接：槽位数组不移动，
-//   下标永不过期，也天然规避了节点内存管理问题
+// - 链表用槽位下标（而非指针）链接：槽位数组只增不改（Vec
+//   重分配不改变下标），下标永不过期，天然规避节点内存管理
 //
-// 为什么槽位数组是 MaybeUninit + 空闲链表：
+// 为什么槽位是 MaybeUninit + 空闲链表：
 // - 槽位"先写后读"（写入完整条目后才挂进链表/哈希表），
 //   无需默认值占位，因此键值只需 Copy，不必 Default
 // - 删除腾出的槽位挂入空闲链表复用，避免"只增不减"的
@@ -30,6 +31,8 @@
 // - 槽位按位搬移值，无需处理析构时序。内核键值通常是
 //   字长标量；复杂类型可用指针/句柄间接存储
 
+use alloc::vec;
+use alloc::vec::Vec;
 use core::mem::MaybeUninit;
 
 /// 哈希槽位：空槽（从未使用，探测链终点）
@@ -49,16 +52,14 @@ struct LruEntry<K, V> {
     next: usize,
 }
 
-/// 定长 LRU 缓存
+/// 堆支持 LRU 缓存
 ///
-/// 泛型参数：
-/// - `CAP`: 条目容量
-/// - `MAP_CAP`: 哈希槽位数（必须大于 CAP，建议 2 倍）
-pub struct LruCache<K: Eq + Copy, V: Copy, const CAP: usize, const MAP_CAP: usize> {
+/// 容量在构造时（with_capacity）指定，哈希表大小 = 2 × 容量。
+pub struct LruCache<K: Eq + Copy, V: Copy> {
     /// 条目槽位数组（槽位"先写后读"，空闲槽用 next 链成空闲表）
-    entries: MaybeUninit<[LruEntry<K, V>; CAP]>,
-    /// 开放寻址哈希表：键 → 条目槽位下标
-    map: [u32; MAP_CAP],
+    entries: Vec<MaybeUninit<LruEntry<K, V>>>,
+    /// 开放寻址哈希表：键 → 条目槽位下标（大小 = 2 × 容量）
+    map: Vec<u32>,
     /// 链表头（最近使用）
     head: usize,
     /// 链表尾（最久未使用，淘汰对象）
@@ -67,24 +68,29 @@ pub struct LruCache<K: Eq + Copy, V: Copy, const CAP: usize, const MAP_CAP: usiz
     free_slots: Option<usize>,
     /// 当前条目数
     len: usize,
+    /// 条目容量上限
+    cap: usize,
 }
 
-impl<K: Eq + Copy, V: Copy, const CAP: usize, const MAP_CAP: usize> LruCache<K, V, CAP, MAP_CAP> {
-    /// 创建空缓存
+impl<K: Eq + Copy, V: Copy> LruCache<K, V> {
+    /// 以指定容量创建空缓存
     ///
-    /// # 为什么断言 MAP_CAP > CAP：
-    /// - 开放寻址的探测循环依赖空槽终止；若哈希表满载，
-    ///   探测将永无止境
-    pub const fn new() -> Self {
-        assert!(CAP > 0, "LRU 容量必须大于 0");
-        assert!(MAP_CAP > CAP, "哈希槽位数必须大于条目容量（建议 2 倍）");
+    /// # 为什么断言 capacity > 0 并取 2 倍哈希表：
+    /// - 容量为 0 时任何 put 都必然立即淘汰，无意义
+    /// - 开放寻址的探测循环依赖空槽终止；2 倍容量保证
+    ///   装载率 ≤ 50%，探测必然终止
+    pub fn with_capacity(capacity: usize) -> Self {
+        assert!(capacity > 0, "LRU 容量必须大于 0");
+        // 哈希表大小固定取 2 倍容量（装载率 ≤ 50%）
+        let map_cap = capacity * 2;
         Self {
-            entries: MaybeUninit::uninit(),
-            map: [MAP_EMPTY; MAP_CAP],
+            entries: Vec::new(),
+            map: vec![MAP_EMPTY; map_cap],
             head: NIL,
             tail: NIL,
             free_slots: None,
             len: 0,
+            cap: capacity,
         }
     }
 
@@ -103,7 +109,7 @@ impl<K: Eq + Copy, V: Copy, const CAP: usize, const MAP_CAP: usize> LruCache<K, 
     /// 容量
     #[inline]
     pub const fn capacity(&self) -> usize {
-        CAP
+        self.cap
     }
 
     /// 是否包含键
@@ -138,7 +144,7 @@ impl<K: Eq + Copy, V: Copy, const CAP: usize, const MAP_CAP: usize> LruCache<K, 
         // 为新键挑选槽位：优先复用空闲槽，否则追加或淘汰
         let index = match self.take_free_slot() {
             Some(slot) => slot,
-            None if self.len < CAP => self.len,
+            None if self.len < self.cap => self.push_slot(),
             None => {
                 // 已满：淘汰最久未使用的条目（链表尾），复用其槽位
                 let evicted_index = self.tail;
@@ -186,6 +192,13 @@ impl<K: Eq + Copy, V: Copy, const CAP: usize, const MAP_CAP: usize> LruCache<K, 
         Some(slot)
     }
 
+    /// 追加一个新槽位（空闲链表用尽且容量未满时）
+    fn push_slot(&mut self) -> usize {
+        let index = self.entries.len();
+        self.entries.push(MaybeUninit::uninit());
+        index
+    }
+
     /// 写入完整条目（覆盖旧内容；旧内容必须已解除引用）
     fn write_entry(&mut self, index: usize, key: K, value: V) {
         let entry = self.entry_mut(index);
@@ -197,12 +210,12 @@ impl<K: Eq + Copy, V: Copy, const CAP: usize, const MAP_CAP: usize> LruCache<K, 
 
     #[inline]
     fn entry(&self, index: usize) -> &LruEntry<K, V> {
-        unsafe { &*self.entries.as_ptr().cast::<LruEntry<K, V>>().add(index) }
+        unsafe { &*self.entries[index].as_ptr() }
     }
 
     #[inline]
     fn entry_mut(&mut self, index: usize) -> &mut LruEntry<K, V> {
-        unsafe { &mut *self.entries.as_mut_ptr().cast::<LruEntry<K, V>>().add(index) }
+        unsafe { &mut *self.entries[index].as_mut_ptr() }
     }
 
     // ============================================================
@@ -225,9 +238,9 @@ impl<K: Eq + Copy, V: Copy, const CAP: usize, const MAP_CAP: usize> LruCache<K, 
 
     /// 查找键对应的条目槽位下标
     fn find_entry(&self, key: &K) -> Option<usize> {
-        let start = Self::hash_key(key) % MAP_CAP;
-        for probe in 0..MAP_CAP {
-            let slot = (start + probe) % MAP_CAP;
+        let start = Self::hash_key(key) % self.map.len();
+        for probe in 0..self.map.len() {
+            let slot = (start + probe) % self.map.len();
             match self.map[slot] {
                 MAP_EMPTY => return None, // 探测链终点
                 MAP_TOMBSTONE => continue, // 墓碑：继续探测
@@ -243,15 +256,15 @@ impl<K: Eq + Copy, V: Copy, const CAP: usize, const MAP_CAP: usize> LruCache<K, 
 
     /// 插入键 → 条目下标映射（调用方保证键不存在）
     fn map_insert(&mut self, key: K, entry: usize) {
-        let start = Self::hash_key(&key) % MAP_CAP;
-        for probe in 0..MAP_CAP {
-            let slot = (start + probe) % MAP_CAP;
+        let start = Self::hash_key(&key) % self.map.len();
+        for probe in 0..self.map.len() {
+            let slot = (start + probe) % self.map.len();
             if self.map[slot] == MAP_EMPTY || self.map[slot] == MAP_TOMBSTONE {
                 self.map[slot] = entry as u32;
                 return;
             }
         }
-        // 理论上不可达：MAP_CAP > CAP 保证有空槽
+        // 理论上不可达：哈希表大小 = 2 × 容量，装载率 ≤ 50%
         unreachable!("哈希表已满（不变量被破坏）");
     }
 
@@ -261,9 +274,9 @@ impl<K: Eq + Copy, V: Copy, const CAP: usize, const MAP_CAP: usize> LruCache<K, 
     /// - 开放寻址的探测链依赖"越过被删槽位继续找"；
     ///   若直接置空，被删槽位之后的同链条目将永久失联
     fn map_remove(&mut self, key: K) {
-        let start = Self::hash_key(&key) % MAP_CAP;
-        for probe in 0..MAP_CAP {
-            let slot = (start + probe) % MAP_CAP;
+        let start = Self::hash_key(&key) % self.map.len();
+        for probe in 0..self.map.len() {
+            let slot = (start + probe) % self.map.len();
             match self.map[slot] {
                 MAP_EMPTY => return,
                 entry_index if self.entry(entry_index as usize).key == key => {
@@ -324,12 +337,9 @@ mod tests {
 
     use super::*;
 
-    /// 测试用缓存：容量 3，哈希槽 8
-    type TestLru = LruCache<u32, u32, 3, 8>;
-
     #[test]
     fn test_put_get_basic() {
-        let mut cache: TestLru = LruCache::new();
+        let mut cache: LruCache<u32, u32> = LruCache::with_capacity(3);
         assert!(cache.is_empty());
         assert_eq!(cache.put(1, 10), None);
         assert_eq!(cache.put(2, 20), None);
@@ -343,7 +353,7 @@ mod tests {
 
     #[test]
     fn test_eviction_order() {
-        let mut cache: TestLru = LruCache::new();
+        let mut cache: LruCache<u32, u32> = LruCache::with_capacity(3);
         cache.put(1, 10);
         cache.put(2, 20);
         cache.put(3, 30);
@@ -359,7 +369,7 @@ mod tests {
 
     #[test]
     fn test_put_existing_updates_and_promotes() {
-        let mut cache: TestLru = LruCache::new();
+        let mut cache: LruCache<u32, u32> = LruCache::with_capacity(3);
         cache.put(1, 10);
         cache.put(2, 20);
         cache.put(3, 30);
@@ -374,7 +384,7 @@ mod tests {
 
     #[test]
     fn test_remove_and_slot_reuse() {
-        let mut cache: TestLru = LruCache::new();
+        let mut cache: LruCache<u32, u32> = LruCache::with_capacity(2);
         cache.put(1, 10);
         cache.put(2, 20);
         assert_eq!(cache.remove(&1), Some(10));
@@ -390,7 +400,7 @@ mod tests {
     #[test]
     fn test_remove_reuse_cycle() {
         // 反复删除/插入，验证空闲槽复用无泄漏、哈希表一致
-        let mut cache: TestLru = LruCache::new();
+        let mut cache: LruCache<u32, u32> = LruCache::with_capacity(3);
         for round in 0..10u32 {
             cache.put(round, round);
             assert_eq!(cache.remove(&round), Some(round));
@@ -407,7 +417,7 @@ mod tests {
 
     #[test]
     fn test_peek_does_not_promote() {
-        let mut cache: TestLru = LruCache::new();
+        let mut cache: LruCache<u32, u32> = LruCache::with_capacity(3);
         cache.put(1, 10);
         cache.put(2, 20);
         cache.put(3, 30);
@@ -420,7 +430,7 @@ mod tests {
     #[test]
     fn test_tombstone_probing() {
         // 小哈希表 + 多条目：必然发生碰撞与墓碑探测
-        let mut cache: TestLru = LruCache::new();
+        let mut cache: LruCache<u32, u32> = LruCache::with_capacity(3);
         for i in 0..3u32 {
             cache.put(i, i);
         }
@@ -432,3 +442,4 @@ mod tests {
         assert_eq!(cache.get(&1), None);
     }
 }
+

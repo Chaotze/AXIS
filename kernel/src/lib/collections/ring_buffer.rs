@@ -1,7 +1,7 @@
 // ============================================================
-// 环形缓冲区（定长循环缓冲）
+// 环形缓冲区（堆支持循环缓冲）
 // ============================================================
-// 固定容量的 FIFO 循环队列，满时覆盖最旧元素。
+// FIFO 循环队列，容量在构造时指定（运行期确定），满时覆盖最旧元素。
 //
 // 为什么需要环形缓冲区：
 // - 串口收发缓冲、内核日志环形缓冲、键盘输入队列等
@@ -9,11 +9,14 @@
 // - 与普通数组队列相比，入队出队都只需移动指针，
 //   无需搬移数据，O(1) 且无内存碎片
 //
-// 为什么设计为定长（const 泛型 N）：
-// - 内核启动早期没有动态分配器，定长数组直接内嵌在
-//   使用方结构体中（如"32 项键盘缓冲"），零堆开销
+// 为什么由定长改为堆支持：
+// - lib 最初全是定长版本（const 泛型 N，槽位数组内嵌在使用方
+//   结构体中）：那时内核尚无动态分配器（mm 未落地）
+// - mm 落地后把存储迁到堆上（Vec），容量由调用方在构造时
+//   指定——"先手搓、再上库"路线在数据结构层的自然延伸：
+//   指针回绕算法不变，变的只是"存储放哪"
 //
-// 为什么用 MaybeUninit<[T; N]> 而不是 [T; N]：
+// 为什么用 Vec<MaybeUninit<T>> 而不是 Vec<T>：
 // - 后者要求 T: Copy/Default，且所有槽位在构造时就被
 //   "假初始化"；MaybeUninit 使槽位只在 push/pop 时
 //   显式初始化与析构，支持任意类型且无额外开销
@@ -22,12 +25,13 @@
 // - 日志/遥测语义下"丢最旧保最新"是正确的取舍；
 //   需要"满则拒绝"的调用方使用 try_push
 
+use alloc::vec::Vec;
 use core::mem::MaybeUninit;
 
-/// 定长环形缓冲区
-pub struct RingBuffer<T, const N: usize> {
+/// 堆支持环形缓冲区
+pub struct RingBuffer<T> {
     /// 槽位数组（未初始化内存，按 head/tail/count 管理）
-    buf: MaybeUninit<[T; N]>,
+    buf: Vec<MaybeUninit<T>>,
     /// 队头下标：最旧元素的存放位置
     head: usize,
     /// 队尾下标：下一个元素的写入位置
@@ -36,16 +40,20 @@ pub struct RingBuffer<T, const N: usize> {
     count: usize,
 }
 
-impl<T, const N: usize> RingBuffer<T, N> {
-    /// 创建空缓冲区
+impl<T> RingBuffer<T> {
+    /// 以指定容量创建空缓冲区（槽位在堆上分配）
     ///
-    /// # 为什么断言 N > 0：
+    /// # 为什么断言 capacity > 0：
     /// - 容量为 0 时头尾指针退化为同一位置，满/空状态
     ///   无法区分（除非额外引入布尔标志，徒增复杂度）
-    pub const fn new() -> Self {
-        assert!(N > 0, "环形缓冲区容量必须大于 0");
+    pub fn with_capacity(capacity: usize) -> Self {
+        assert!(capacity > 0, "环形缓冲区容量必须大于 0");
+        // resize_with 逐个写入 MaybeUninit::uninit 槽位：
+        // 不需要 T: Clone/Default，槽位保持未初始化状态
+        let mut buf = Vec::with_capacity(capacity);
+        buf.resize_with(capacity, MaybeUninit::uninit);
         Self {
-            buf: MaybeUninit::uninit(),
+            buf,
             head: 0,
             tail: 0,
             count: 0,
@@ -54,8 +62,8 @@ impl<T, const N: usize> RingBuffer<T, N> {
 
     /// 容量
     #[inline]
-    pub const fn capacity(&self) -> usize {
-        N
+    pub fn capacity(&self) -> usize {
+        self.buf.len()
     }
 
     /// 当前元素个数
@@ -73,7 +81,7 @@ impl<T, const N: usize> RingBuffer<T, N> {
     /// 是否已满
     #[inline]
     pub const fn is_full(&self) -> bool {
-        self.count == N
+        self.count == self.buf.len()
     }
 
     /// 入队；缓冲区已满时覆盖最旧元素并返回它
@@ -85,12 +93,13 @@ impl<T, const N: usize> RingBuffer<T, N> {
             let evicted = unsafe { self.read_at(self.head) };
             unsafe { self.write_at(self.tail, value) };
             // 头尾同时前移：队列整体滑动一个位置
-            self.head = (self.head + 1) % N;
-            self.tail = (self.tail + 1) % N;
+            let cap = self.buf.len();
+            self.head = (self.head + 1) % cap;
+            self.tail = (self.tail + 1) % cap;
             Some(evicted)
         } else {
             unsafe { self.write_at(self.tail, value) };
-            self.tail = (self.tail + 1) % N;
+            self.tail = (self.tail + 1) % self.buf.len();
             self.count += 1;
             None
         }
@@ -102,7 +111,7 @@ impl<T, const N: usize> RingBuffer<T, N> {
             return Err(value);
         }
         unsafe { self.write_at(self.tail, value) };
-        self.tail = (self.tail + 1) % N;
+        self.tail = (self.tail + 1) % self.buf.len();
         self.count += 1;
         Ok(())
     }
@@ -113,7 +122,7 @@ impl<T, const N: usize> RingBuffer<T, N> {
             return None;
         }
         let value = unsafe { self.read_at(self.head) };
-        self.head = (self.head + 1) % N;
+        self.head = (self.head + 1) % self.buf.len();
         self.count -= 1;
         Some(value)
     }
@@ -153,21 +162,23 @@ impl<T, const N: usize> RingBuffer<T, N> {
     ///   维护不变式是最直接也最透明的表达方式
     #[inline]
     fn slot_ptr(&self, index: usize) -> *mut T {
-        unsafe { (self.buf.as_ptr() as *mut T).add(index) }
+        // Vec 索引即槽位；MaybeUninit::as_ptr 不要求槽位已初始化
+        self.buf[index].as_ptr() as *mut T
     }
 }
 
-impl<T, const N: usize> Drop for RingBuffer<T, N> {
+impl<T> Drop for RingBuffer<T> {
     fn drop(&mut self) {
         // 析构尚未出队的存活元素，防止泄漏
         // 为什么必须手动实现：槽位是 MaybeUninit，
         // 编译器不知道哪些元素存活，默认不会调用它们的 Drop
+        let cap = self.buf.len();
         for _ in 0..self.count {
             // 读出元素得到所有权，语句结束时由编译器析构它
             unsafe {
                 self.read_at(self.head);
             }
-            self.head = (self.head + 1) % N;
+            self.head = (self.head + 1) % cap;
         }
     }
 }
@@ -183,7 +194,7 @@ mod tests {
 
     #[test]
     fn test_push_pop_roundtrip() {
-        let mut rb: RingBuffer<i32, 4> = RingBuffer::new();
+        let mut rb: RingBuffer<i32> = RingBuffer::with_capacity(4);
         assert!(rb.is_empty());
         assert_eq!(rb.pop(), None);
         assert_eq!(rb.peek(), None);
@@ -203,7 +214,7 @@ mod tests {
     #[test]
     fn test_wraparound() {
         // 容量 4，写入 6 个元素，验证环形回绕与覆盖语义
-        let mut rb: RingBuffer<i32, 4> = RingBuffer::new();
+        let mut rb: RingBuffer<i32> = RingBuffer::with_capacity(4);
         assert_eq!(rb.push(1), None);
         assert_eq!(rb.push(2), None);
         assert_eq!(rb.pop(), Some(1));
@@ -220,7 +231,7 @@ mod tests {
 
     #[test]
     fn test_evict_oldest_on_full() {
-        let mut rb: RingBuffer<i32, 4> = RingBuffer::new();
+        let mut rb: RingBuffer<i32> = RingBuffer::with_capacity(4);
         for v in 1..=4 {
             assert_eq!(rb.push(v), None);
         }
@@ -233,7 +244,7 @@ mod tests {
 
     #[test]
     fn test_try_push_rejects_when_full() {
-        let mut rb: RingBuffer<i32, 2> = RingBuffer::new();
+        let mut rb: RingBuffer<i32> = RingBuffer::with_capacity(2);
         assert_eq!(rb.try_push(1), Ok(()));
         assert_eq!(rb.try_push(2), Ok(()));
         assert_eq!(rb.try_push(3), Err(3));
@@ -254,7 +265,7 @@ mod tests {
 
         let counter = Rc::new(Cell::new(0));
         {
-            let mut rb: RingBuffer<DropCounter, 4> = RingBuffer::new();
+            let mut rb: RingBuffer<DropCounter> = RingBuffer::with_capacity(4);
             for _ in 0..3 {
                 rb.push(DropCounter {
                     count: counter.clone(),
@@ -265,3 +276,4 @@ mod tests {
         assert_eq!(counter.get(), 3);
     }
 }
+

@@ -1,5 +1,5 @@
 // ============================================================
-// 无锁哈希表（定长、开放寻址、CAS 槽位）
+// 无锁哈希表（堆支持、开放寻址、CAS 槽位）
 // ============================================================
 // u64 键 → u64 值的并发哈希映射，读写无需互斥锁。
 //
@@ -7,8 +7,12 @@
 // - 中断上下文、多核共享的"名称 → 对象"小表（如设备
 //   注册表、模块符号表）；读多写少且不能睡眠的场景
 //
-// 为什么是"定长 + 开放寻址"：
-// - 无动态分配器：槽位数组内嵌，容量编译期确定
+// 为什么是"堆支持 + 开放寻址"：
+// - lib 最初是定长版本（const 泛型 CAP，槽位数组内嵌在使用方
+//   结构体中）：内核尚无动态分配器
+// - mm 落地后槽位数组在构造时按容量分配（Box<[AtomicU64]>）；
+//   分配完成后数组地址恒定、槽位永不移动，并发协议全部
+//   不变——无锁结构只要求"已发布的内存不动"，与分配时机无关
 // - 开放寻址避免链表节点回收与并发遍历的难题；
 //   链式哈希表的节点生命周期管理在无锁环境下异常复杂
 //
@@ -27,6 +31,9 @@
 // - 8 位状态与 56 位键打包进一个原子字；键必须小于
 //   2^56（debug 断言），内核的地址/索引键远小于此界
 
+use alloc::boxed::Box;
+use alloc::vec;
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use core::cell::UnsafeCell;
 
@@ -44,12 +51,12 @@ const fn pack_slot(state: u64, key: u64) -> u64 {
     (state << 56) | (key & KEY_MASK)
 }
 
-/// 定长无锁哈希表
-pub struct LockfreeHashMap<const CAP: usize> {
-    /// 槽位数组：[状态|键] 原子字
-    slots: [AtomicU64; CAP],
+/// 堆支持无锁哈希表
+pub struct LockfreeHashMap {
+    /// 槽位数组：[状态|键] 原子字（构造时分配，此后地址恒定）
+    slots: Box<[AtomicU64]>,
     /// 值数组：与槽位一一对应（受槽位状态机保护）
-    values: UnsafeCell<[u64; CAP]>,
+    values: UnsafeCell<Box<[u64]>>,
     /// 当前条目数
     len: AtomicUsize,
 }
@@ -58,15 +65,24 @@ pub struct LockfreeHashMap<const CAP: usize> {
 // - 槽位是原子字；值数组的访问受槽位状态机约束
 //   （值写入先于槽位发布、读取后于槽位命中），
 //   跨线程可见性由 Acquire/Release 保证
-unsafe impl<const CAP: usize> Sync for LockfreeHashMap<CAP> {}
+unsafe impl Sync for LockfreeHashMap {}
 
-impl<const CAP: usize> LockfreeHashMap<CAP> {
-    /// 创建空表
-    pub const fn new() -> Self {
-        assert!(CAP > 0, "哈希表容量必须大于 0");
+impl LockfreeHashMap {
+    /// 以指定容量创建空表（槽位/值数组在堆上分配）
+    ///
+    /// # 为什么 new 取代 const 构造：
+    /// - 定长版本靠 const 泛型在编译期给出槽位数组；堆支持
+    ///   版本容量在运行期确定，new 一次性分配两份数组，
+    ///   数组地址自此不变，并发安全的前提不受影响
+    pub fn new(capacity: usize) -> Self {
+        assert!(capacity > 0, "哈希表容量必须大于 0");
+        let slots = (0..capacity)
+            .map(|_| AtomicU64::new(pack_slot(SLOT_EMPTY, 0)))
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
         Self {
-            slots: [const { AtomicU64::new(pack_slot(SLOT_EMPTY, 0)) }; CAP],
-            values: UnsafeCell::new([0; CAP]),
+            slots,
+            values: UnsafeCell::new(vec![0u64; capacity].into_boxed_slice()),
             len: AtomicUsize::new(0),
         }
     }
@@ -90,8 +106,8 @@ impl<const CAP: usize> LockfreeHashMap<CAP> {
         debug_assert!(key <= KEY_MASK, "键超出 56 位范围");
         let start = self.hash(key);
 
-        for probe in 0..CAP {
-            let slot = (start + probe) % CAP;
+        for probe in 0..self.slots.len() {
+            let slot = (start + probe) % self.slots.len();
             let packed = self.slots[slot].load(Ordering::Acquire);
             let state = packed >> 56;
             match state {
@@ -119,8 +135,8 @@ impl<const CAP: usize> LockfreeHashMap<CAP> {
         debug_assert!(key <= KEY_MASK, "键超出 56 位范围");
         let start = self.hash(key);
 
-        for probe in 0..CAP {
-            let slot = (start + probe) % CAP;
+        for probe in 0..self.slots.len() {
+            let slot = (start + probe) % self.slots.len();
             let packed = self.slots[slot].load(Ordering::Acquire);
             let state = packed >> 56;
 
@@ -155,8 +171,8 @@ impl<const CAP: usize> LockfreeHashMap<CAP> {
         debug_assert!(key <= KEY_MASK, "键超出 56 位范围");
         let start = self.hash(key);
 
-        for probe in 0..CAP {
-            let slot = (start + probe) % CAP;
+        for probe in 0..self.slots.len() {
+            let slot = (start + probe) % self.slots.len();
             let packed = self.slots[slot].load(Ordering::Acquire);
             let state = packed >> 56;
 
@@ -184,7 +200,7 @@ impl<const CAP: usize> LockfreeHashMap<CAP> {
     /// 键的起始探测位置（FNV-1a，复用 lib/hash.rs）
     #[inline]
     fn hash(&self, key: u64) -> usize {
-        super::super::super::hash::hash_u64(key) as usize % CAP
+        super::super::super::hash::hash_u64(key) as usize % self.slots.len()
     }
 }
 
@@ -199,7 +215,7 @@ mod tests {
 
     #[test]
     fn test_insert_get_remove() {
-        let map: LockfreeHashMap<64> = LockfreeHashMap::new();
+        let map = LockfreeHashMap::new(64);
         assert!(map.is_empty());
 
         assert!(map.insert(1, 100));
@@ -218,7 +234,7 @@ mod tests {
 
     #[test]
     fn test_overwrite() {
-        let map: LockfreeHashMap<8> = LockfreeHashMap::new();
+        let map = LockfreeHashMap::new(8);
         assert!(map.insert(5, 1));
         assert!(map.insert(5, 2)); // 覆盖不增计数
         assert_eq!(map.get(5), Some(2));
@@ -228,7 +244,7 @@ mod tests {
     #[test]
     fn test_tombstone_reuse() {
         // 容量小必然碰撞；删除后墓碑槽位应可复用
-        let map: LockfreeHashMap<8> = LockfreeHashMap::new();
+        let map = LockfreeHashMap::new(8);
         for i in 0..6u64 {
             assert!(map.insert(i, i * 10));
         }
@@ -251,7 +267,7 @@ mod tests {
     #[test]
     fn test_full_table_rejects() {
         // 填满后新键插入必须失败
-        let map: LockfreeHashMap<8> = LockfreeHashMap::new();
+        let map = LockfreeHashMap::new(8);
         for i in 0..8u64 {
             assert!(map.insert(i, i));
         }
@@ -262,7 +278,7 @@ mod tests {
     #[test]
     fn test_concurrent_insert_get() {
         // 两个线程各插 100 个不相交键，随后全部可见
-        let map: Arc<LockfreeHashMap<512>> = Arc::new(LockfreeHashMap::new());
+        let map: Arc<LockfreeHashMap> = Arc::new(LockfreeHashMap::new(512));
 
         let mut handles = std::vec::Vec::new();
         for t in 0..2 {
@@ -285,3 +301,4 @@ mod tests {
         }
     }
 }
+
