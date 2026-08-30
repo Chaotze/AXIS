@@ -46,6 +46,17 @@ pub const IOAPIC_MMIO_BASE: u64 = PHYSICAL_MEMORY_OFFSET + 0xFEC0_0000;
 /// 页面大小
 pub const PAGE_SIZE: usize = 4096;
 
+/// 物理内存上限（字节）：QEMU 启动参数 -m 128M 对应 128MB
+///
+/// 引导加载程序尚未向内核传递内存映射表，PMM 先把 [内核映像末端,
+/// PHYSICAL_RAM_TOP) 视为可用区；将来支持 bootloader 内存地图后
+/// 由 pmm::init_with_regions 接管。
+pub const PHYSICAL_RAM_TOP: u64 = 128 * 1024 * 1024;
+
+/// 内核 mm 自测的演示虚拟地址区（位于内核映像之上、内核堆之下，
+/// 不与任何已布局段冲突；映射时使用内核权限，避免 SMAP 干扰）
+pub const MM_SELFTEST_BASE: u64 = 0xFFFF_FFFF_9000_0000;
+
 /// 中断相关配置
 pub const IDT_ENTRIES: usize = 256;
 

@@ -71,7 +71,7 @@ impl VgaWriter {
     }
 
     /// 写入单个字节（按字符逐字节处理，处理 \n 与 \r）
-    fn write_byte(&mut self, byte: u8) {
+    pub fn write_byte(&mut self, byte: u8) {
         match byte {
             b'\n' => self.newline(),
             b'\r' => self.column = 0,

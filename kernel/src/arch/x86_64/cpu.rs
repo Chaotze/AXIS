@@ -105,6 +105,10 @@ unsafe fn enable_sse_avx(features: u32) {
         asm!("mov {}, cr0", out(reg) cr0, options(nostack, preserves_flags));
         cr0 |= 1 << 1;  // CR0.MP = 1
         cr0 &= !(1 << 2); // CR0.EM = 0
+        cr0 |= 1 << 16; // CR0.WP = 1：写保护——内核态对只读页（含内核
+                        // 文本段）的写入同样触发 #PF。没有它，COW 的
+                        // “只读共享页”在核心态下写不报错，按需分页的安全
+                        // 边界形同虚设（Linux 自启动早期就设置该位）
         asm!("mov cr0, {}", in(reg) cr0, options(nostack, preserves_flags));
 
         // 设置 CR4

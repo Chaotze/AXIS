@@ -31,6 +31,10 @@ pub extern "C" fn _boot_rust() -> ! {
     println!("\n[INIT] Initializing architecture...");
     axis_kernel::arch::init();
 
+    // 内存管理初始化（物理内存 → 堆 → 虚拟内存）
+    println!("\n[INIT] Initializing memory management...");
+    axis_kernel::mm::init();
+
     // 系统就绪
     println!("\n[INIT] System initialized successfully!");
     println!("[INIT] Kernel is now running...");

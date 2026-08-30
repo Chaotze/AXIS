@@ -56,11 +56,23 @@ pub fn handle_exception(vector: usize, error_code: u64, frame: &InterruptStackFr
 /// - bit 4 (I/D): 1 = 指令取指
 ///
 /// CR2 寄存器：保存触发页错误的虚拟地址
+///
+/// 处理流程：先把问题交给 VMM 的缺页处理器（按需分页 / COW /
+/// 交换换入）；VMM 无法解决（非法访问、内核 bug）时再打印现场并 panic。
 fn handle_page_fault(error_code: u64, frame: &InterruptStackFrame) {
     // 读取 CR2（发生错误的地址）
     let fault_addr: u64;
     unsafe {
         core::arch::asm!("mov {}, cr2", out(reg) fault_addr, options(nostack, preserves_flags));
+    }
+
+    // 交给内存管理层的统一缺页处理器
+    // 为什么放到最前面尝试解决：缺页中的绝大多数是“按需分页”等
+    // 可恢复事件，先尝试解决；只有解决不了才走完整诊断输出
+    if crate::mm::vmm::handle_page_fault(fault_addr, error_code)
+        == crate::mm::vmm::PageFaultResult::Resolved
+    {
+        return;
     }
 
     // 解析错误码
@@ -70,7 +82,7 @@ fn handle_page_fault(error_code: u64, frame: &InterruptStackFrame) {
     let reserved = error_code & 0x8 != 0;
     let instruction = error_code & 0x10 != 0;
 
-    println!("\n!!! PAGE FAULT !!!");
+    println!("\n!!! PAGE FAULT (UNRESOLVED) !!!");
     println!("Fault address: 0x{:016X}", fault_addr);
     println!("Error code: 0x{:X}", error_code);
     println!("  Present: {}", present);
@@ -80,8 +92,8 @@ fn handle_page_fault(error_code: u64, frame: &InterruptStackFrame) {
     println!("  Instruction: {}", instruction);
     print_interrupt_frame(frame);
 
-    // 暂时无法处理，panic
-    panic!("Page fault at 0x{:016X}", fault_addr);
+    // VMM 无法解决（非法访问/内核 bug），panic
+    panic!("Unresolved page fault at 0x{:016X}", fault_addr);
 }
 
 /// 双重故障处理
