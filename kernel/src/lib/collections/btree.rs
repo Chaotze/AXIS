@@ -1,5 +1,5 @@
 // ============================================================
-// B 树（定长节点池）
+// B 树（堆支持节点池）
 // ============================================================
 // 实现经典 B 树映射：有序键值对、所有叶子同深度、节点键数
 // 介于 [MIN_KEYS, K_MAX] 之间（根例外）。
@@ -9,11 +9,10 @@
 //   范围查询 + 稳定树高"的场景；树高 O(log N) 保证最坏
 //   情况下的查询步数，这对内核的可预测性很重要
 //
-// 为什么实现为定长节点池（const 泛型）：
-// - 内核启动早期没有动态分配器，节点从内嵌的固定数组池
-//   中分配/回收（空闲链表复用 children[0] 作 next 指针），
-//   全程零堆开销
-// - 分配器落地后，只需把"池"替换为 kmalloc 即可获得动态版本
+// 为什么节点仍用 u32 下标而非指针：
+// - Vec 重分配会搬移节点但不会改变下标，树内持久引用的下标
+//   永不失效，且单次访问都重新借用（借用在单条语句内结束），
+//   从定长数组池迁移过来后不变式原封不动
 //
 // 为什么 const 泛型参数是 K_MAX / C_MAX 而非"阶数 t"：
 // - Rust 稳定版不支持对 const 泛型做算术（2t-1）作为数组
@@ -30,6 +29,7 @@
 // - 单线程拥有权贯穿全部递归路径，天然无别名，安全性
 //   显著优于"&self 返回 &mut"的常见内核写法
 
+use alloc::vec::Vec;
 use core::mem::MaybeUninit;
 
 /// B 树节点
@@ -59,23 +59,20 @@ impl<K: Ord, V, const K_MAX: usize, const C_MAX: usize> BTreeNode<K, V, K_MAX, C
     }
 }
 
-/// 定长节点池 B 树映射
+/// 堆支持节点池 B 树映射
 ///
 /// 泛型参数：
 /// - `K_MAX`: 每节点最大键数（必须为奇数，≥3）
 /// - `C_MAX`: 每节点最大子节点数（必须等于 K_MAX + 1）
-/// - `N_MAX`: 节点池容量（树最多容纳的节点总数）
-pub struct BTreeMap<K: Ord + Copy, V: Copy, const K_MAX: usize, const C_MAX: usize, const N_MAX: usize> {
-    /// 节点池（未初始化内存，经 ensure_init 后按空闲链表管理）
-    nodes: MaybeUninit<[BTreeNode<K, V, K_MAX, C_MAX>; N_MAX]>,
-    /// 根节点池索引
+pub struct BTreeMap<K: Ord + Copy, V: Copy, const K_MAX: usize, const C_MAX: usize> {
+    /// 节点池（按空闲链表管理；高水位增长，无固定上限）
+    nodes: Vec<BTreeNode<K, V, K_MAX, C_MAX>>,
+    /// 根节点池下标
     root: Option<u32>,
     /// 空闲节点链表头（复用空闲节点的 children[0] 作 next）
     free_head: Option<u32>,
     /// 键值对总数
     len: usize,
-    /// 节点池是否已初始化（配合 const fn new 做惰性初始化）
-    initialized: bool,
 }
 
 /// 节点最少键数（阶数 t 的 t-1；K_MAX = 2t-1）
@@ -83,28 +80,26 @@ const fn min_keys<const K_MAX: usize>() -> usize {
     K_MAX / 2
 }
 
-impl<K: Ord + Copy, V: Copy, const K_MAX: usize, const C_MAX: usize, const N_MAX: usize>
-    BTreeMap<K, V, K_MAX, C_MAX, N_MAX>
+impl<K: Ord + Copy, V: Copy, const K_MAX: usize, const C_MAX: usize>
+    BTreeMap<K, V, K_MAX, C_MAX>
 {
     /// 创建空树
     ///
-    /// # 为什么必须是 const fn：
-    /// - 内核的 B 树通常作为静态结构体的字段（static mut），
-    ///   必须支持编译期构造；节点池的初始化因此推迟到
-    ///   首次写操作（ensure_init），读取空树无需初始化
-    pub const fn new() -> Self {
-        // 编译期校验 const 泛型参数的约束关系
+    /// # 为什么不再需要 const/惰性初始化：
+    /// - 定长版本受"编译期构造静态字段"约束，节点池必须
+    ///   惰性初始化；堆支持版本的空树不分配任何节点，
+    ///   new 之后按需 push，无需 initialized 标志
+    pub fn new() -> Self {
+        // 运行期校验 const 泛型参数的约束关系
         assert!(K_MAX >= 3, "K_MAX 必须至少为 3（阶数 t >= 2）");
         assert!(K_MAX % 2 == 1, "K_MAX 必须为奇数，合并操作才能不溢出");
         assert!(C_MAX == K_MAX + 1, "C_MAX 必须等于 K_MAX + 1");
-        assert!(N_MAX >= 2, "节点池至少需要 2 个节点（根 + 分裂出的兄弟）");
 
         Self {
-            nodes: MaybeUninit::uninit(),
+            nodes: Vec::new(),
             root: None,
             free_head: None,
             len: 0,
-            initialized: false,
         }
     }
 
@@ -150,12 +145,10 @@ impl<K: Ord + Copy, V: Copy, const K_MAX: usize, const C_MAX: usize, const N_MAX
 
     /// 插入键值对；键已存在时替换并返回旧值
     pub fn insert(&mut self, key: K, value: V) -> Option<V> {
-        self.ensure_init();
-
         match self.root {
             None => {
                 // 空树：新建根节点
-                let root = self.allocate_node().expect("B 树节点池耗尽");
+                let root = self.allocate_node();
                 self.root = Some(root);
                 self.write_key_val(root, 0, key, value);
                 self.set_key_count(root, 1);
@@ -166,7 +159,7 @@ impl<K: Ord + Copy, V: Copy, const K_MAX: usize, const C_MAX: usize, const N_MAX
                 // 根满：先分裂根（树长高一层），这是 B 树
                 // "只从根向下生长"不变式的标准做法
                 if self.key_count(root) == K_MAX {
-                    let new_root = self.allocate_node().expect("B 树节点池耗尽");
+                    let new_root = self.allocate_node();
                     self.set_child(new_root, 0, Some(root));
                     self.set_leaf(new_root, false);
                     self.set_key_count(new_root, 0);
@@ -184,9 +177,6 @@ impl<K: Ord + Copy, V: Copy, const K_MAX: usize, const C_MAX: usize, const N_MAX
 
     /// 删除键；返回被删除的值，键不存在返回 None
     pub fn remove(&mut self, key: &K) -> Option<V> {
-        if !self.initialized {
-            return None;
-        }
         let root = self.root?;
 
         let removed = self.delete_from(root, *key);
@@ -209,8 +199,8 @@ impl<K: Ord + Copy, V: Copy, const K_MAX: usize, const C_MAX: usize, const N_MAX
     /// 按中序遍历所有键值对（键升序）
     ///
     /// 为什么用闭包遍历而不是返回迭代器：
-    /// - 无动态分配环境无法持有任意长度的显式栈；闭包形式
-    ///   由调用方决定收集/处理方式，遍历本身零分配
+    /// - 递归遍历需要显式栈或深度递归；闭包形式让调用方
+    ///   自行决定收集/处理方式，遍历本身零分配
     pub fn visit(&self, f: &mut impl FnMut(&K, &V)) {
         if let Some(root) = self.root {
             self.visit_node(root, f);
@@ -221,36 +211,27 @@ impl<K: Ord + Copy, V: Copy, const K_MAX: usize, const C_MAX: usize, const N_MAX
     // 内部：节点池管理
     // ============================================================
 
-    /// 惰性初始化节点池（首次写操作时调用）
+    /// 从空闲链表分配一个节点；链表为空时向堆申请新节点
     ///
-    /// # 为什么惰性：
-    /// - const fn new 无法写入未初始化内存，而静态初始化
-    ///   又要求 const；折中方案是"声明期不做、首写时做"
-    fn ensure_init(&mut self) {
-        if self.initialized {
-            return;
+    /// # 为什么池会"越用越大"：
+    /// - Vec 只增不减，配合空闲链表复用，池的大小收敛到树
+    ///   历史最高水位；这是"动态池"与"定长池"的成本差异——
+    ///   换取了容量上限的消失
+    fn allocate_node(&mut self) -> u32 {
+        match self.free_head {
+            Some(index) => {
+                // 先取后继指针，结束借用后再推进表头
+                let next = self.node_mut(index).children[0];
+                self.free_head = next;
+                *self.node_mut(index) = BTreeNode::new(true);
+                index
+            }
+            None => {
+                let index = self.nodes.len() as u32;
+                self.nodes.push(BTreeNode::new(true));
+                index
+            }
         }
-        self.initialized = true;
-
-        // 全部节点串联为空闲链表
-        for i in 0..N_MAX as u32 {
-            // 先取出表头，避免与 node_mut 的借用冲突
-            let head = self.free_head;
-            let node = self.node_mut(i);
-            *node = BTreeNode::new(true);
-            node.children[0] = head;
-            self.free_head = Some(i);
-        }
-    }
-
-    /// 从空闲链表分配一个节点（返回干净的叶子节点）
-    fn allocate_node(&mut self) -> Option<u32> {
-        let index = self.free_head?;
-        // 先取后继指针，结束借用后再推进表头
-        let next = self.node_mut(index).children[0];
-        self.free_head = next;
-        *self.node_mut(index) = BTreeNode::new(true);
-        Some(index)
     }
 
     /// 回收节点到空闲链表
@@ -266,24 +247,12 @@ impl<K: Ord + Copy, V: Copy, const K_MAX: usize, const C_MAX: usize, const N_MAX
 
     #[inline]
     fn node_ref(&self, index: u32) -> &BTreeNode<K, V, K_MAX, C_MAX> {
-        unsafe {
-            &*self
-                .nodes
-                .as_ptr()
-                .cast::<BTreeNode<K, V, K_MAX, C_MAX>>()
-                .add(index as usize)
-        }
+        &self.nodes[index as usize]
     }
 
     #[inline]
     fn node_mut(&mut self, index: u32) -> &mut BTreeNode<K, V, K_MAX, C_MAX> {
-        unsafe {
-            &mut *self
-                .nodes
-                .as_mut_ptr()
-                .cast::<BTreeNode<K, V, K_MAX, C_MAX>>()
-                .add(index as usize)
-        }
+        &mut self.nodes[index as usize]
     }
 
     #[inline]
@@ -392,7 +361,7 @@ impl<K: Ord + Copy, V: Copy, const K_MAX: usize, const C_MAX: usize, const N_MAX
     /// 中间键提升到父节点。这是 B 树高度增长的唯一途径。
     fn split_child(&mut self, parent: u32, i: usize) {
         let child = self.child_at(parent, i).unwrap();
-        let sibling = self.allocate_node().expect("B 树节点池耗尽");
+        let sibling = self.allocate_node();
         let mid = min_keys::<K_MAX>(); // 中间键下标（K_MAX = 2*mid+1）
 
         // 兄弟承接右半部分键值
@@ -699,7 +668,7 @@ impl<K: Ord + Copy, V: Copy, const K_MAX: usize, const C_MAX: usize, const N_MAX
     // 内部：遍历
     // ============================================================
 
-    /// 中序递归遍历（递归深度 = 树高 ≤ N_MAX，编译期有界）
+    /// 中序递归遍历（递归深度 = 树高 = O(log N)，堆栈有界）
     fn visit_node(&self, node: u32, f: &mut impl FnMut(&K, &V)) {
         let count = self.key_count(node);
         for i in 0..count {
@@ -727,20 +696,17 @@ mod tests {
     use super::*;
 
     /// 测试用树：阶数 t=2（2-3-4 树），K_MAX=3、C_MAX=4
-    /// 节点池 512：容纳"全部节点只填最少键"的最坏情况（100 键 ≈ 170 节点）
-    type TestTree = BTreeMap<u32, u32, 3, 4, 512>;
+    type TestTree = BTreeMap<u32, u32, 3, 4>;
 
     /// B 树结构不变量校验器：
     /// - 键严格递增且在 (min, max) 开区间内
     /// - 非根节点键数 >= MIN_KEYS
     /// - 所有叶子深度一致
-    fn validate_tree<const K_MAX: usize, const C_MAX: usize, const N_MAX: usize>(
-        tree: &BTreeMap<u32, u32, K_MAX, C_MAX, N_MAX>,
-    ) {
+    fn validate_tree<const K_MAX: usize, const C_MAX: usize>(tree: &BTreeMap<u32, u32, K_MAX, C_MAX>) {
         let mut leaf_depth: Option<usize> = None;
 
-        fn walk<const K_MAX: usize, const C_MAX: usize, const N_MAX: usize>(
-            tree: &BTreeMap<u32, u32, K_MAX, C_MAX, N_MAX>,
+        fn walk<const K_MAX: usize, const C_MAX: usize>(
+            tree: &BTreeMap<u32, u32, K_MAX, C_MAX>,
             node: u32,
             depth: usize,
             min: Option<u32>,

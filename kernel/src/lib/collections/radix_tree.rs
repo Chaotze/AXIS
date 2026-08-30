@@ -1,5 +1,5 @@
 // ============================================================
-// Radix 树（基树，定长节点池）
+// Radix 树（基树，堆支持节点池）
 // ============================================================
 // 以 u64 键的二进制位为路径的多叉前缀树。
 //
@@ -9,9 +9,7 @@
 //   查询/插入/删除都是 O(树高)，且天然支持范围/前缀遍历
 // - 相比哈希表，Radix 树保持键序，遍历有序且无碰撞退化
 //
-// 为什么设计为定长节点池 + 固定扇出（const 泛型）：
-// - 与 btree.rs 同理：无动态分配器的内核早期只能内嵌节点池；
-//   空闲链表复用 children[0] 作 next 指针，零额外元数据
+// 为什么 FANOUT 仍是 const 泛型：
 // - FANOUT 必须是 2 的幂且整除 64：键按 shift = log2(FANOUT)
 //   位切片，树高恒为 64 / shift，路径计算全是移位与掩码，
 //   无除法（这是与 B 树的实现差异——整数键不需要比较）
@@ -21,7 +19,7 @@
 //   非叶子层存值会引入"前缀命中"的歧义语义，简单起见
 //   统一约定"值为完整键的附属物"
 
-use core::mem::MaybeUninit;
+use alloc::vec::Vec;
 
 /// Radix 树节点
 struct RadixNode<V, const FANOUT: usize> {
@@ -48,22 +46,19 @@ impl<V, const FANOUT: usize> RadixNode<V, FANOUT> {
     }
 }
 
-/// 定长节点池 Radix 树
+/// 堆支持节点池 Radix 树
 ///
 /// 泛型参数：
 /// - `FANOUT`: 每节点扇出（必须是 2 的幂且整除 64）
-/// - `N_MAX`: 节点池容量
-pub struct RadixTree<V: Copy, const FANOUT: usize, const N_MAX: usize> {
-    /// 节点池（未初始化内存，经 ensure_init 后按空闲链表管理）
-    nodes: MaybeUninit<[RadixNode<V, FANOUT>; N_MAX]>,
+pub struct RadixTree<V: Copy, const FANOUT: usize> {
+    /// 节点池（按空闲链表管理；高水位增长，无固定上限）
+    nodes: Vec<RadixNode<V, FANOUT>>,
     /// 根节点池索引
     root: Option<u32>,
     /// 空闲节点链表头（复用空闲节点的 children[0] 作 next）
     free_head: Option<u32>,
     /// 当前键值对总数
     len: usize,
-    /// 节点池是否已初始化（配合 const fn new 做惰性初始化）
-    initialized: bool,
 }
 
 /// 每层消耗的位数（FANOUT = 2^shift）
@@ -71,25 +66,23 @@ const fn fanout_shift<const FANOUT: usize>() -> usize {
     FANOUT.trailing_zeros() as usize
 }
 
-impl<V: Copy, const FANOUT: usize, const N_MAX: usize> RadixTree<V, FANOUT, N_MAX> {
+impl<V: Copy, const FANOUT: usize> RadixTree<V, FANOUT> {
     /// 创建空树
     ///
-    /// # 为什么必须是 const fn：
-    /// - 与 btree.rs 同理，静态初始化需要编译期构造；
-    ///   节点池惰性初始化（ensure_init）
-    pub const fn new() -> Self {
+    /// # 为什么不再需要 const/惰性初始化：
+    /// - 定长版本受"编译期构造静态字段"约束；堆支持版本的空树
+    ///   不分配任何节点，new 之后按需 push，无需 initialized 标志
+    pub fn new() -> Self {
         // FANOUT 约束：2 的幂（切片算法依赖）且能整除 64（树高恒定）
         assert!(FANOUT >= 2, "FANOUT 必须至少为 2");
         assert!(FANOUT.is_power_of_two(), "FANOUT 必须是 2 的幂");
         assert!(64 % fanout_shift::<FANOUT>() == 0, "FANOUT 必须能整除 64 位键宽");
-        assert!(N_MAX >= 2, "节点池至少需要 2 个节点");
 
         Self {
-            nodes: MaybeUninit::uninit(),
+            nodes: Vec::new(),
             root: None,
             free_head: None,
             len: 0,
-            initialized: false,
         }
     }
 
@@ -122,10 +115,8 @@ impl<V: Copy, const FANOUT: usize, const N_MAX: usize> RadixTree<V, FANOUT, N_MA
 
     /// 插入键值对；键已存在时替换并返回旧值
     pub fn insert(&mut self, key: u64, value: V) -> Option<V> {
-        self.ensure_init();
-
         if self.root.is_none() {
-            let root = self.allocate_node().expect("Radix 树节点池耗尽");
+            let root = self.allocate_node();
             self.root = Some(root);
         }
 
@@ -137,7 +128,7 @@ impl<V: Copy, const FANOUT: usize, const N_MAX: usize> RadixTree<V, FANOUT, N_MA
                 None => {
                     // 沿路径按需创建节点（惰性展开：只建实际
                     // 用到的分支，稀疏键空间不浪费节点）
-                    let child = self.allocate_node().expect("Radix 树节点池耗尽");
+                    let child = self.allocate_node();
                     self.node_mut(node).children[index] = Some(child);
                     node = child;
                 }
@@ -158,9 +149,6 @@ impl<V: Copy, const FANOUT: usize, const N_MAX: usize> RadixTree<V, FANOUT, N_MA
     /// 删除后自底向上剪枝：空节点（无值无分支）释放回空闲池，
     /// 保证树结构始终最紧凑。
     pub fn remove(&mut self, key: u64) -> Option<V> {
-        if !self.initialized {
-            return None;
-        }
         let root = self.root?;
 
         let (removed, root_empty) = self.remove_node(root, key, 0);
@@ -176,34 +164,33 @@ impl<V: Copy, const FANOUT: usize, const N_MAX: usize> RadixTree<V, FANOUT, N_MA
         removed
     }
 
-    /// 惰性初始化节点池
-    fn ensure_init(&mut self) {
-        if self.initialized {
-            return;
-        }
-        self.initialized = true;
+    // ============================================================
+    // 内部：节点池管理
+    // ============================================================
 
-        for i in 0..N_MAX as u32 {
-            // 先取出表头，避免与 node_mut 的借用冲突
-            let head = self.free_head;
-            let node = self.node_mut(i);
-            *node = RadixNode::new();
-            node.children[0] = head;
-            self.free_head = Some(i);
+    /// 从空闲链表分配一个干净节点；链表为空时向堆申请新节点
+    ///
+    /// # 为什么池会"越用越大"：
+    /// - Vec 只增不减，配合空闲链表复用，池的大小收敛到树
+    ///   历史最高水位；换取了容量上限的消失
+    fn allocate_node(&mut self) -> u32 {
+        match self.free_head {
+            Some(index) => {
+                // 先取后继指针，结束借用后再推进表头
+                let next = self.node_mut(index).children[0];
+                self.free_head = next;
+                *self.node_mut(index) = RadixNode::new();
+                index
+            }
+            None => {
+                let index = self.nodes.len() as u32;
+                self.nodes.push(RadixNode::new());
+                index
+            }
         }
     }
 
-    /// 从空闲链表分配一个干净节点
-    fn allocate_node(&mut self) -> Option<u32> {
-        let index = self.free_head?;
-        // 先取后继指针，结束借用后再推进表头
-        let next = self.node_mut(index).children[0];
-        self.free_head = next;
-        *self.node_mut(index) = RadixNode::new();
-        Some(index)
-    }
-
-    /// 回收节点
+    /// 回收节点到空闲链表
     fn free_node(&mut self, index: u32) {
         let head = self.free_head;
         self.node_mut(index).children[0] = head;
@@ -239,12 +226,12 @@ impl<V: Copy, const FANOUT: usize, const N_MAX: usize> RadixTree<V, FANOUT, N_MA
 
     #[inline]
     fn node_ref(&self, index: u32) -> &RadixNode<V, FANOUT> {
-        unsafe { &*self.nodes.as_ptr().cast::<RadixNode<V, FANOUT>>().add(index as usize) }
+        &self.nodes[index as usize]
     }
 
     #[inline]
     fn node_mut(&mut self, index: u32) -> &mut RadixNode<V, FANOUT> {
-        unsafe { &mut *self.nodes.as_mut_ptr().cast::<RadixNode<V, FANOUT>>().add(index as usize) }
+        &mut self.nodes[index as usize]
     }
 }
 
@@ -272,9 +259,7 @@ mod tests {
     use super::*;
 
     /// 测试用树：扇出 16（每层 4 位），树高 16
-    /// 节点池 512：200 个稠密键在低位切片处充分分支，
-    /// 最坏约需 200+ 个节点
-    type TestTree = RadixTree<u32, 16, 512>;
+    type TestTree = RadixTree<u32, 16>;
 
     #[test]
     fn test_insert_get() {
