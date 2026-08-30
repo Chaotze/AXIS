@@ -22,7 +22,7 @@ use axis_kernel::config;
 #[unsafe(no_mangle)]
 pub extern "C" fn _boot_rust() -> ! {
     // 清屏（VGA 缓冲区经物理内存映射区访问，见 config::VGA_TEXT_BUFFER）
-    axis_kernel::libcore::vga::clear_screen();
+    axis_kernel::lib::vga::clear_screen();
 
     // 打印启动 Banner
     print_banner();

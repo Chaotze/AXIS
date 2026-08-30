@@ -68,7 +68,7 @@ unsafe fn init_apic_timer() {
 /// 由中断处理程序调用
 pub fn handle_tick() {
     // 更新系统时钟
-    crate::libcore::time::tick();
+    crate::lib::time::tick();
 
     // 后续：调度器时间片检查
 }

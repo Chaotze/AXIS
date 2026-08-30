@@ -6,7 +6,7 @@
 use core::fmt::Write;
 use core::panic::PanicInfo;
 
-use axis_kernel::libcore::vga::VgaWriter;
+use axis_kernel::lib::vga::VgaWriter;
 
 /// Panic 处理器
 ///

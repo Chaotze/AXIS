@@ -9,7 +9,7 @@
 
 use core::fmt::{self, Write};
 
-use crate::libcore::vga::VgaWriter;
+use crate::lib::vga::VgaWriter;
 use crate::sync::Spinlock;
 
 /// VGA 文本模式写入器（经自旋锁串行化，多核安全）

@@ -12,7 +12,7 @@ pub use core::ptr;
 pub use crate::sync::{Spinlock, SpinlockGuard};
 
 // 结果类型
-pub use crate::libcore::result::{KernelResult, KernelError};
+pub use crate::lib::result::{KernelResult, KernelError};
 
 // 宏
 pub use crate::{print, println};

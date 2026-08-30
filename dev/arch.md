@@ -20,6 +20,7 @@ AXIS/
 ├── kernel/                                     # 内核主程序
 │   ├── Cargo.toml
 │   ├── kernel.ld                               # 内核链接脚本 (内存布局：低端引导桩 + 高半核主体)
+│   ├── build.rs                                # 构建脚本 (NASM 汇编、链接参数注入)
 │   │
 │   └── src/
 │       ├── main.rs                             # 内核主函数入口
@@ -262,7 +263,7 @@ AXIS/
 │       │   ├── procfs_emulation.rs             # /proc 伪文件系统模拟 (不一定必要)
 │       │   └── personality.rs                  # 进程个性设置 (PER_LINUX)
 │       │
-│       ├── libcore/                           # 通用库函数和工具
+│       ├── lib/                                # 通用库函数和工具
 │       │   ├── mod.rs
 │       │   ├── vga.rs                          # VGA 文本模式底层支持 (共享写入器，供 print/panic 复用)
 │       │   ├── print.rs                        # 打印和日志函数 (基于 vga.rs 加锁输出)

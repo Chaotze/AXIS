@@ -13,6 +13,12 @@
 //   - src/arch/x86_64/boot.asm            内核引导入口 _boot
 //   - src/arch/x86_64/interrupt/entry.asm 中断/异常入口存根
 //   - src/arch/x86_64/context/switch.asm  上下文切换汇编
+//
+// 为什么按目标门控（仅在裸机目标注入汇编对象与链接脚本）：
+//   - 单元测试以宿主目标构建（cargo test --target
+//     x86_64-pc-windows-msvc）：宿主没有 _boot_rust 等符号，
+//     强行链接 elf64 对象会导致"未定义符号/格式不兼容"；
+//     门控后同一份源码可以同时支撑裸机构建与宿主测试
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -26,13 +32,25 @@ fn main() {
         "src/arch/x86_64/context/switch.asm",
     ];
 
+    // 目标操作系统：裸机目标为 "none"（见 x86_64-unknown-axis.json）
+    let target_os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let is_bare_metal = target_os == "none";
+
+    // 汇编文件变化总是触发重新构建（宿主构建也能及早
+    // 发现语法问题——但注意：宿主构建不实际运行 NASM）
+    for asm_file in asm_files {
+        println!("cargo:rerun-if-changed={asm_file}");
+    }
+
+    if !is_bare_metal {
+        // 宿主构建（单元测试）：不注入任何链接参数
+        return;
+    }
+
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR 环境变量缺失"));
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    
-    for asm_file in asm_files {
-        // 源文件变化时触发重新构建
-        println!("cargo:rerun-if-changed={asm_file}");
 
+    for asm_file in asm_files {
         // 目标文件：OUT_DIR/<文件名>.o
         let stem = Path::new(asm_file)
             .file_stem()
@@ -57,9 +75,8 @@ fn main() {
         println!("cargo:rustc-link-arg={}", obj_path.display());
     }
 
-    // 链接器脚本
+    // 链接器脚本（绝对路径注入，避免工作目录歧义）
     let linker_script = manifest_dir.join("kernel.ld");
     println!("cargo:rerun-if-changed={}", linker_script.display());
     println!("cargo:rustc-link-arg=-T{}", linker_script.display());
-
 }
