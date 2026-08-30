@@ -94,9 +94,11 @@ build() {
     ############################################################
     info "Creating disk image..."
 
-    # 创建磁盘镜像（0.25MB）
+    # 创建磁盘镜像（0.5MB = 1024 扇区）
+    # 容量依据：stage1 分 6 轮装载内核（128 扇区起，每轮 128 扇区），
+    # 需 128 + 6×128 = 896 扇区 < 1024；0.25MB（512 扇区）已不足
     IMG_PATH="target/axis-0.1.2-bios-x86_64.img"
-    dd if=/dev/zero of="$IMG_PATH" bs=1024 count=256 2>/dev/null
+    dd if=/dev/zero of="$IMG_PATH" bs=1024 count=512 2>/dev/null
     info "Image file created: $IMG_PATH"
 
     # 写入 Stage1（MBR）

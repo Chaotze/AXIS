@@ -144,6 +144,43 @@ AXIS/
 │       │   ├── cgroup.rs                       # cgroup v2 资源控制
 │       │   └── resource.rs                     # 资源限制 (rlimit)
 │       │
+│       │   ┌——— task 子系统实现说明（与设计的一致性修订）———┐
+│       │   │ 文件结构与原设计一致（pcb/thread/process/signal/
+│       │   │ resource + scheduler/{cfs,preemption,cpu_affinity,
+│       │   │ load_balance} + namespace/cgroup）。按现实约束
+│       │   │ 落地修订如下：
+│       │   │
+│       │   │ 1. 分层（同 mm）：纯算法模块（除 task/mod.rs 外全部）
+│       │   │    不引用 arch/全局锁，经 unitest 宿主测试；mod.rs
+│       │   │    为装配层（全局任务表 + 调度器 + 启动自测）。
+│       │   │ 2. 就绪队列复用 lib 的 BTreeMap（vruntime, tid 二元组
+│       │   │    键保证唯一），替代原设计的红黑树：职责等价且
+│       │   │    已过完整测试，避免重复造轮；树高同阶，接口
+│       │   │    （first 取最小键）已补齐。若 profile 显示必要，
+│       │   │    仅替换内部容器即可。
+│       │   │ 3. 定长任务表：pid = 槽位下标，空闲位图复用
+│       │   │    lib::Bitmap；Rust 稳定版不支持 const 泛型算术，
+│       │   │    槽位/位图字数/节点池以独立 const 参数传入，
+│       │   │    编译期断言约束（如 K_MAX 奇数、C_MAX=K_MAX+1、
+│       │   │    MAX_NODES ≥ 2×MAX_TASKS+8）。
+│       │   │ 4. 全局任务态用 Spinlock<Option<Box<TaskState>>>：
+│       │   │    TaskState 约 150KB，Box 堆分配避免引导栈大块
+│       │   │    拷贝；引导栈由 64KB 增至 256KB（mm 自测深层
+│       │   │    调用链 + 大静态布局曾溢出 64KB）。
+│       │   │ 5. 本轮交付边界：数据结构/算法完整（进程树、fork/
+│       │   │    exec/exit/wait、信号、rlimit、CFS、抢占、亲和、
+│       │   │    均衡、命名空间、cgroup）；真实上下文切换与
+│       │   │    tick_hook 接线为下一轮（arch TrapFrame+switch.asm
+│       │   │    配合）；exec 的 ELF 加载是 compat/loader 挂载点。
+│       │   │ 6. 引导链扩容：内核含 mm/task 后约 300KB，stage1
+│       │   │    分块读取由 3×64KB 增至 6×64KB（384KB 上限），
+│       │   │    镜像容量 0.25MB → 0.5MB。
+│       │   │ 7. 测试：unitest 宿主测试（task 组 11 个纯算法文件）
+│       │   │    + 内核启动自测 task::selftest（9 项：进程树/
+│       │   │    生命周期/信号/rlimit/CFS 公平性/亲和/负载均衡/
+│       │   │    命名空间/cgroup）在 QEMU 验证。
+│       │   └—— 锁序约定：TASK 为叶锁（不内持其他全局锁）———┘
+│       │
 │       ├── fs/
 │       │   ├── mod.rs                          # VFS 抽象层入口
 │       │   ├── vfs.rs                          # 虚拟文件系统核心接口 (Inode、File trait)

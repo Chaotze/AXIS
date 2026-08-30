@@ -35,6 +35,10 @@ pub extern "C" fn _boot_rust() -> ! {
     println!("\n[INIT] Initializing memory management...");
     axis_kernel::mm::init();
 
+    // 任务子系统初始化（任务表、调度器、进程树根）
+    println!("\n[INIT] Initializing task subsystem...");
+    axis_kernel::task::init();
+
     // 系统就绪
     println!("\n[INIT] System initialized successfully!");
     println!("[INIT] Kernel is now running...");
