@@ -32,12 +32,22 @@ pub fn _print(args: fmt::Arguments) {
     let _ = wr.write_fmt(args);
     let len = wr.1;
 
+    // 持锁打印期间屏蔽中断（保存原标志，事后恢复）：
+    // 为什么必须屏蔽——任务 A 持打印锁时若被定时器抢占，任务 B
+    // 打印将在 WRITER 上自旋，而 A 已被挂起永远无法释放 → 死锁。
+    // 屏蔽中断使打印临界区不可被抢占，是自旋锁 + 抢占共存的
+    // 标准 irqsave 纪律（多核场景将来还需加 per-CPU 层次）。
+    let flags = crate::arch::x86_64::cpu::irq_save();
     let mut writer = WRITER.lock();
     for &b in &buf[..len] {
         if b == b'\n' {
             writer.write_byte(b'\r');
         }
         writer.write_byte(b);
+    }
+    drop(writer);
+    unsafe {
+        crate::arch::x86_64::cpu::irq_restore(flags);
     }
 
     // 调试：镜像到 COM1（16550 UART），QEMU 下配合 -serial stdio 使用。

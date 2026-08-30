@@ -41,6 +41,8 @@ struct TaskState {
     /// 模拟 tick 计数（自测/统计用；真实 tick 由
     /// timer 中断经 tick_hook 注入）
     simulated_ticks: u64,
+    /// 累计上下文切换次数（监控/验证调度在运转）
+    context_switches: u64,
 }
 
 /// 全局任务状态
@@ -58,8 +60,17 @@ static TASK: Spinlock<Option<alloc::boxed::Box<TaskState>>> = Spinlock::new(None
 ///
 /// 顺序：
 /// 1. 创建 idle(0) 与 init(1) 进程（进程树的根）
-/// 2. 把 init 的主线程加入就绪队列（第一个可调度任务）
+/// 2. 为 init 与 3 个演示任务创建内核栈与首次运行帧
+/// 3. 跑纯逻辑自测（此时尚未开调度，输出不受并发干扰）
+/// 4. start_scheduling()：任务入队，返回后主循环成为 idle，
+///    首个定时器 tick 开始真实上下文切换
 pub fn init() {
+    // 全程关中断：初始化阶段持 TASK 锁并做堆分配，若被定时器
+    // 中断打断，中断路径的 tick_hook 会等 TASK 锁自旋，而中断
+    // 不返回、init 永不继续 → 死锁（首跳约在 sti 后 1ms，
+    // 初始化一旦变慢就会撞进这个窗口）
+    let flags = crate::arch::x86_64::cpu::irq_save();
+
     let mut guard = TASK.lock();
     // Box 分配：TaskState 体量巨大（~150KB），在堆上构造
     // 避免占用引导栈；随后整体移动进全局状态，无大块栈拷贝
@@ -67,75 +78,175 @@ pub fn init() {
         table: process::ProcessTable::new(),
         sched: scheduler::Scheduler::new(),
         simulated_ticks: 0,
+        context_switches: 0,
     });
 
-    // idle：不参与调度，仅占位（后续 idle 循环使用）
+    // idle：不参与调度，仅占位（主循环 hlt 即其运行态）
     state.table.spawn(process::INVALID_PID, 0).expect("idle 创建失败");
-    // init：所有孤儿进程的归宿，进程树的根
+    // init：所有孤儿进程的归宿，进程树的根，也是内核线程
     state.table.spawn(process::INVALID_PID, 0).expect("init 创建失败");
+    // 为 init 装配内核栈与首次运行帧（入口 init_task）
+    setup_kernel_thread(&mut state, process::INIT_PID, 0, init_task as *const () as usize, 0);
 
-    // init 主线程进入调度视野
-    state
-        .sched
-        .admit(process::INIT_PID, 0)
-        .expect("init 入队失败");
+    // 三个演示内核线程（nice 5/0/-5，验证 CFS 权重公平）
+    spawn_demo_task(&mut state, "demo-1", 1, 5);
+    spawn_demo_task(&mut state, "demo-2", 2, 0);
+    spawn_demo_task(&mut state, "demo-3", 3, -5);
 
     *guard = Some(state);
     drop(guard);
 
     println!("[TASK] task subsystem ready ({} slots)", MAX_TASKS);
     selftest();
+
+    // 开调度：init 与 3 个演示任务进入就绪队列；
+    // 此后主循环成为 idle 任务，由定时器中断驱动切换
+    start_scheduling();
+    println!("[TASK] scheduling started (4 kernel threads, CFS preemption)");
+
+    // 初始化完成：恢复中断，首个 tick 开始真实抢占切换
+    unsafe {
+        crate::arch::x86_64::cpu::irq_restore(flags);
+    }
 }
 
-/// 定时器 tick 钩子（timer 中断经此进入调度视野）
+/// 开始调度：任务入队并装载 idle 时间片
 ///
-/// 本轮只做记账与抢占判定，不执行真实切换（见模块头
-/// 说明）；返回"下一个应运行的任务"供上层观察。
-/// 接线步骤：interrupt/timer.rs 的 handle_tick 在
-/// time::tick() 之后调用本函数。
-pub fn tick_hook() -> Option<thread::Tid> {
+/// 为什么单独成步：
+/// - 自测（selftest）在调度开启前同步运行，输出不被并发
+///   任务穿插；本函数返回后，首次 tick 即开始抢占切换
+fn start_scheduling() {
     let mut guard = TASK.lock();
-    let state = guard.as_mut()?;
-    state.simulated_ticks += 1;
+    let Some(state) = guard.as_mut() else { return };
 
-    // 记账：当前任务 vruntime 前进 1 tick（按权重折算）
-    let current = state.sched.current;
-    if current != thread::INVALID_TID {
-        if let Some(pcb) = state.table.get_mut(current) {
-            let weight = scheduler::nice_to_weight(pcb.main_thread.nice);
-            pcb.main_thread.vruntime += scheduler::calc_vruntime_delta(1, weight);
-        }
-    }
-
-    // 抢占判定：当前任务落后队首超过粒度则请求切换
-    if let Some(min_vr) = state.sched.runqueue.min_vruntime() {
-        if current != thread::INVALID_TID {
-            let cur_vr = state
-                .table
-                .get(current)
-                .map(|p| p.main_thread.vruntime)
-                .unwrap_or(0);
-            if scheduler::should_preempt(cur_vr, min_vr) {
-                // TODO(arch): 真实上下文切换接线点（TrapFrame + switch.asm）
+    // init 与演示任务入队（vruntime 0，按 tid 平局裁决）
+    let mut pids: alloc::vec::Vec<u32> = alloc::vec::Vec::new();
+    for i in 0..MAX_TASKS as u32 {
+        if let Some(pcb) = state.table.get(i) {
+            if pcb.is_alive() && i != process::IDLE_PID {
+                pids.push(i);
             }
         }
     }
+    for pid in pids {
+        let _ = state.sched.admit(pid, 0);
+    }
 
-    state.sched.pick_next()
+    // 当前上下文（主循环 hlt）即 idle：设 current 并给时间片，
+    // 首个 tick 会把它当作旧任务切出（其帧被保存，iretq 可
+    // 在未来"切回 idle"时恢复——当前演示任务恒可运行，idle
+    // 仅在启动初期运行）
+    state.sched.current = process::IDLE_PID;
+    if let Some(idle) = state.table.get_mut(process::IDLE_PID) {
+        idle.main_thread.ticks_left = 24;
+    }
+}
+
+/// 定时器 tick 钩子：真实上下文切换（由中断存根调用）
+///
+/// # 参数
+/// - `saved_rsp`: 当前中断现场在栈上的保存帧地址
+///   （"RSP 指向 r15 槽"，见 interrupt/entry.asm）
+///
+/// # 返回
+/// - 0：不切换，存根在原栈恢复
+/// - 非 0：目标任务的保存帧 RSP，存根换栈后 iretq 落入新任务
+///
+/// 为什么在中断上下文中持 TASK 锁是安全的：
+/// - 中断门进入时 IF=0，本 CPU 不会重入；就绪队列的堆分配
+///   （BTreeMap 节点）走 PMM/KHEAP 锁，与 TASK 无环
+pub fn tick_hook(saved_rsp: usize) -> usize {
+    let mut guard = TASK.lock();
+    let Some(state) = guard.as_mut() else { return 0 };
+    state.simulated_ticks += 1;
+
+    let current = state.sched.current;
+    if current == thread::INVALID_TID {
+        // 防御：调度未初始化时的 tick 直接忽略
+        return 0;
+    }
+
+    // ---- 1. 当前任务记账：vruntime 前进（1024 定标）+ 时间片扣减
+    let (cur_vr, need_switch) = {
+        let pcb = state.table.get_mut(current).expect("当前任务缺失");
+        let weight = scheduler::nice_to_weight(pcb.main_thread.nice);
+        // 1024 定标：1 tick 的真实时间放大 1024 倍记入 vr，
+        // 保证高权重（nice<0，权重>1024）任务的每 tick 增量
+        // 也不为 0（否则其 vr 永停 → 永远最小 → 饿死其余任务）
+        pcb.main_thread.vruntime += scheduler::calc_vruntime_delta(1024, weight);
+        let expired = scheduler::tick_charge(
+            &mut pcb.main_thread.ticks_left,
+            &mut pcb.main_thread.need_resched,
+        );
+        (pcb.main_thread.vruntime, expired)
+    };
+
+    // ---- 2. 抢占判定：时间片耗尽 或 vruntime 落后队首超过粒度
+    let min_vr = state.sched.runqueue.min_vruntime().unwrap_or(cur_vr);
+    if !need_switch && !scheduler::should_preempt(cur_vr, min_vr) {
+        return 0;
+    }
+
+    // ---- 3. 保存旧任务现场（idle 不入队：它只在队列空时被唤醒）
+    if current != process::IDLE_PID {
+        let pcb = state.table.get_mut(current).expect("旧任务缺失");
+        pcb.main_thread.trap_frame = saved_rsp;
+        let vr = pcb.main_thread.vruntime;
+        let _ = state.sched.runqueue.enqueue(current, vr);
+    } else {
+        let idle = state.table.get_mut(process::IDLE_PID).expect("idle 缺失");
+        idle.main_thread.trap_frame = saved_rsp;
+    }
+
+    // ---- 4. 选出 vruntime 最小的任务并出队
+    let Some((key, next_tid)) = state.sched.runqueue.pick_next() else {
+        // 队列空（演示阶段不会发生）：继续 idle
+        state.sched.current = process::IDLE_PID;
+        return 0;
+    };
+    state.sched.runqueue.dequeue(key);
+    state.sched.current = next_tid;
+    state.context_switches += 1;
+
+    // ---- 5. 装载新任务时间片并返回其保存帧 RSP
+    let next_pcb = state.table.get_mut(next_tid).expect("新任务缺失");
+    let weight = scheduler::nice_to_weight(next_pcb.main_thread.nice);
+    let nr = state.sched.runqueue.len() + 1;
+    let slice = scheduler::sched_slice_ticks(nr, weight, weight);
+    scheduler::charge_slice(
+        &mut next_pcb.main_thread.ticks_left,
+        &mut next_pcb.main_thread.need_resched,
+        slice,
+    );
+    next_pcb.main_thread.state = thread::ThreadState::Running;
+    next_pcb.main_thread.trap_frame
 }
 
 /// 汇总统计（监控接口）
+///
+/// 为什么读锁也要 irq_save：
+/// - 任务态（如 init_task）调用时若被定时器抢占，中断路径的
+///   tick_hook 会等待同一把 TASK 锁 → 死锁；屏蔽中断使
+///   读锁区间不可被抢占（与中断路径的锁获取互斥）
 pub fn stats() -> TaskStats {
-    let guard = TASK.lock();
-    match guard.as_ref() {
-        None => TaskStats::default(),
-        Some(state) => TaskStats {
-            total_tasks: state.table.len(),
-            runqueue_len: state.sched.runqueue.len(),
-            current: state.sched.current,
-            simulated_ticks: state.simulated_ticks,
-        },
+    let flags = crate::arch::x86_64::cpu::irq_save();
+    let result = {
+        let guard = TASK.lock();
+        match guard.as_ref() {
+            None => TaskStats::default(),
+            Some(state) => TaskStats {
+                total_tasks: state.table.len(),
+                runqueue_len: state.sched.runqueue.len(),
+                current: state.sched.current,
+                simulated_ticks: state.simulated_ticks,
+                context_switches: state.context_switches,
+            },
+        }
+    };
+    unsafe {
+        crate::arch::x86_64::cpu::irq_restore(flags);
     }
+    result
 }
 
 /// 任务子系统监控统计
@@ -149,6 +260,89 @@ pub struct TaskStats {
     pub current: thread::Tid,
     /// 累计 tick
     pub simulated_ticks: u64,
+    /// 累计上下文切换次数
+    pub context_switches: u64,
+}
+
+// ---------------------------------------------------------------------
+// 内核线程装配（真实上下文切换的构造侧）
+// ---------------------------------------------------------------------
+
+/// 内核线程栈大小
+/// 64KB：入口调用链 + 中断保存帧 + tick_hook 的堆分配
+/// 调用链（BTreeMap 节点分配经 GlobalAlloc → SLUB）较深，
+/// 16KB 在实测中出现栈耗尽型崩溃（缺页 at 0x0，帧 RSP
+/// 恒定落在栈顶附近）；64KB 留足余量
+const KERNEL_THREAD_STACK: usize = 64 * 1024;
+
+/// 为指定 pid 装配内核栈与首次运行帧
+///
+/// 为什么栈用 kmalloc 而非静态数组：
+/// - 任务数动态（256 上限），静态预留浪费；堆分配 4 页/任务，
+///   随任务退出可归还（当前演示任务常驻，不归还）
+fn setup_kernel_thread(
+    state: &mut TaskState,
+    pid: u32,
+    nice: i8,
+    entry: usize,
+    arg0: u64,
+) {
+    // 栈：kmalloc 对齐 16（SwitchFrame 需要 16 字节对齐栈顶）
+    let raw = crate::mm::heap::kmalloc(KERNEL_THREAD_STACK, 16);
+    assert!(!raw.is_null(), "内核线程栈分配失败");
+    let stack_top = raw as usize + KERNEL_THREAD_STACK;
+    // 首次运行帧：iretq 后从 entry 开始，rdi = arg0
+    let frame_rsp =
+        crate::arch::x86_64::context::frame::SwitchFrame::init_stack(entry, stack_top, arg0);
+
+    let pcb = state.table.get_mut(pid).expect("任务不存在");
+    pcb.main_thread.nice = nice;
+    pcb.main_thread.kernel_stack = raw as usize;
+    pcb.main_thread.trap_frame = frame_rsp;
+    pcb.main_thread.state = thread::ThreadState::Ready;
+}
+
+/// 创建一个演示内核线程（挂在 init 之下）
+fn spawn_demo_task(state: &mut TaskState, _name: &str, arg: u64, nice: i8) {
+    let pid = state
+        .table
+        .spawn(process::INIT_PID, 0)
+        .expect("演示任务创建失败");
+    setup_kernel_thread(state, pid, nice, demo_task as *const () as usize, arg);
+}
+
+/// init 内核线程入口：周期打印系统状态（调度在运转的佐证）
+extern "C" fn init_task(_arg: u64) -> ! {
+    // 【诊断】先纯空转（与 demo 任务同策略）
+    let mut round: u64 = 0;
+    loop {
+        round += 1;
+        if round % 1_000_000_000 == 0 {
+            let s = stats();
+            println!(
+                "[INIT] ticks={} switches={} runq={}",
+                s.simulated_ticks, s.context_switches, s.runqueue_len
+            );
+        }
+    }
+}
+
+/// 演示内核线程入口：以参数区分身份，循环打印进度
+///
+/// 三个实例 nice 不同（5/0/-5），输出频率天然不同——
+/// 屏幕上的交错输出即"多任务并发切换"的直接证据；
+/// 计数速度差异则是 CFS 权重公平的直观体现。
+extern "C" fn demo_task(arg: u64) -> ! {
+    let id = arg;
+    // 【诊断】先纯空转：分离"切换机制"与"打印路径"
+    // （若空转稳定则切换正常，问题在任务内打印）
+    let mut round: u64 = 0;
+    loop {
+        round += 1;
+        if round % 1_000_000_000 == 0 {
+            println!("[T{}] round=1G", id);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------

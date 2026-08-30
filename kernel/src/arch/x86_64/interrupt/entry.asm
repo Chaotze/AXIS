@@ -192,6 +192,15 @@ irq_common:
     extern handle_irq
     call handle_irq
 
+    ; handle_irq 返回新的栈指针（0 = 不切换）：
+    ; 调度器决定切换时，返回目标任务的保存帧 RSP；
+    ; 切换到新栈后，下面的弹栈序列从新任务的帧恢复寄存器，
+    ; iretq 落入新任务上下文——这就是"中断返回式上下文切换"
+    test rax, rax
+    jz .no_switch
+    mov rsp, rax
+.no_switch:
+
     ; 恢复所有通用寄存器
     pop r15
     pop r14

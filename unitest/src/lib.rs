@@ -163,3 +163,13 @@ pub mod task {
         pub mod load_balance;
     }
 }
+
+// ============================================================
+// unitest::context —— 对应 kernel/src/arch/x86_64/context
+// ============================================================
+// 上下文帧布局的宿主测试（纯数据结构，无 arch 依赖）。
+
+pub mod context {
+    #[path = "../../../kernel/src/arch/x86_64/context/frame.rs"]
+    pub mod frame;
+}

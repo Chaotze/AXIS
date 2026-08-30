@@ -95,8 +95,11 @@ pub fn handle_exception(vector: usize, error_code: u64, frame: &InterruptStackFr
 
 /// 处理硬件中断
 ///
-/// 从汇编存根调用，统一处理所有硬件中断
+/// 从汇编存根调用；返回"新的栈指针"（0 = 不切换上下文）：
+/// - 定时器中断路径可能触发调度切换，返回目标任务的
+///   保存帧 RSP，由 entry.asm 在恢复寄存器前换栈
+/// - 其余中断返回 0
 #[unsafe(no_mangle)]
-pub extern "C" fn handle_irq(vector: u64, frame: &InterruptStackFrame) {
-    handler::handle_irq(vector as usize, frame);
+pub extern "C" fn handle_irq(vector: u64, frame: &InterruptStackFrame) -> usize {
+    handler::handle_irq(vector as usize, frame)
 }

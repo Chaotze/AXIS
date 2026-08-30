@@ -159,27 +159,43 @@ fn handle_generic_exception(vector: usize, error_code: u64, frame: &InterruptSta
 }
 
 /// 处理硬件中断
-pub fn handle_irq(vector: usize, _frame: &InterruptStackFrame) {
+///
+/// 返回新的栈指针（0 = 不切换）：定时器中断路径可能触发
+/// 调度切换，见 interrupt/entry.asm 的换栈说明。
+pub fn handle_irq(vector: usize, frame: &InterruptStackFrame) -> usize {
     match vector {
         32 => {
-            // 定时器中断
-            handle_timer_interrupt();
+            // 定时器中断：时钟记账 → EOI → 调度 tick 钩子（可能切换）
+            handle_timer_interrupt(frame)
         }
         _ => {
             println!("Unhandled IRQ: {}", vector);
             // 发送 EOI
             super::apic::send_eoi();
+            0
         }
     }
 }
 
 /// 定时器中断处理
-fn handle_timer_interrupt() {
+///
+/// 返回新栈指针（0 = 不切换）。
+/// 顺序为什么是 tick → EOI → 调度：
+/// - EOI 在切换前发出，LAPIC 不必等新任务运行就能继续收中断
+/// - 调度决策（tick_hook）持有任务锁，在中断上下文（IF=0）安全
+fn handle_timer_interrupt(frame: &InterruptStackFrame) -> usize {
     // 调用定时器模块的处理函数
     super::timer::handle_tick();
 
     // 发送 EOI
     super::apic::send_eoi();
+
+    // 调度 tick 钩子：真实上下文切换
+    // frame 指向 CPU 压入的 rip 处；其上 17 个槽（15 通用寄存器
+    // + 向量 + 伪错误码）是存根的保存区——"RSP 指向 r15 槽"的
+    // 保存帧地址 = frame 地址 - 17*8
+    let saved_rsp = (frame as *const InterruptStackFrame as usize) - 17 * 8;
+    crate::task::tick_hook(saved_rsp)
 }
 
 /// 打印中断帧信息

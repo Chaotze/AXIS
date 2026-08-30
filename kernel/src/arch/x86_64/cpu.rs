@@ -211,3 +211,50 @@ pub unsafe fn init() {
 pub fn has_feature(feature: u32) -> bool {
     unsafe { CPU_FEATURES & feature != 0 }
 }
+
+// ---------------------------------------------------------------------
+// 中断标志保存/恢复（irqsave / irqrestore）
+// ---------------------------------------------------------------------
+
+/// 保存中断标志并关中断，返回原 RFLAGS
+///
+/// 为什么需要"保存后恢复"而不是裸 cli/sti：
+/// - 调用点可能本身处于中断上下文（IF 已为 0），盲目的
+///   sti 会在不该开中断的地方提前开中断；
+///   保存原标志后恢复，保证语义是"临时屏蔽"而非"改变状态"
+///
+/// 典型用途：临界区不可被抢占（打印持锁期间），
+/// 见 lib/print.rs 的 _print——任务持打印锁时若被定时器
+/// 抢占，其他任务打印会在 WRITER 上自旋死锁，
+/// 故打印全程屏蔽中断并事后恢复
+#[inline]
+pub fn irq_save() -> u64 {
+    let flags: u64;
+    unsafe {
+        core::arch::asm!(
+            "pushfq",
+            "pop {0}",
+            "cli",
+            out(reg) flags,
+            options(nostack, preserves_flags)
+        );
+    }
+    flags
+}
+
+/// 恢复由 irq_save 保存的中断标志
+///
+/// # Safety
+/// 调用方必须保证传入的是 irq_save 返回的原标志，
+/// 且成对调用（平衡）
+#[inline]
+pub unsafe fn irq_restore(flags: u64) {
+    unsafe {
+        core::arch::asm!(
+            "push {0}",
+            "popfq",
+            in(reg) flags,
+            options(nostack, preserves_flags)
+        );
+    }
+}

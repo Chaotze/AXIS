@@ -50,9 +50,21 @@ static ALLOCATOR: KernelAllocator = KernelAllocator;
 ///
 /// 为什么需要两把锁：PMM 提供物理页，堆把页切成对象，二者状态
 /// 必须互斥修改；锁序固定 PMM → KHEAP，任何调用路径不得倒序。
+///
+/// 为什么全程 irq_save：
+/// - 中断路径（如调度 tick_hook 的 BTreeMap 节点分配）也会
+///   经此拿锁；任务态持锁期间若被定时器抢占，中断路径将在
+///   这里自旋而死锁——屏蔽中断使堆分配临界区不可被抢占
+/// - 中断上下文中调用时 IF 已为 0，irq_save 保存 0 恢复 0，
+///   语义无害（幂等）
 #[inline]
 fn with_provider<R>(f: impl FnOnce(&mut Kmalloc, &mut dyn PageProvider) -> R) -> Option<R> {
-    pmm::with_pmm(|pm| f(&mut KHEAP.lock(), pm as &mut dyn PageProvider))
+    let flags = crate::arch::x86_64::cpu::irq_save();
+    let result = pmm::with_pmm(|pm| f(&mut KHEAP.lock(), pm as &mut dyn PageProvider));
+    unsafe {
+        crate::arch::x86_64::cpu::irq_restore(flags);
+    }
+    result
 }
 
 /// 内核堆初始化：在 pmm::init 之后、任何 alloc 容器使用之前调用
