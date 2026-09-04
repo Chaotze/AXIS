@@ -70,26 +70,49 @@ impl VgaWriter {
         self.row = 0;
     }
 
-    /// 写入单个字节（按字符逐字节处理，处理 \n 与 \r）
+    /// 写入单个字节（按字符逐字节处理，处理 \n、\r、\t 等控制字符）
+    ///
+    /// 为什么需要处理 \t：
+    /// - 制表符能让日志输出对齐，提高可读性
+    /// - VGA 文本模式下通过空格实现制表符（对齐到 8 字节边界）
+    /// - 这是内核日志记录的基本需求
     pub fn write_byte(&mut self, byte: u8) {
         match byte {
             b'\n' => self.newline(),
             b'\r' => self.column = 0,
+            b'\t' => {
+                // 制表符宽度：8 字符
+                // 对齐逻辑：从当前列位置 column，跳转到下一个 8 的倍数处
+                // 例：column=0 时写 8 个空格，column=5 时写 3 个空格到达列 8
+                let spaces_to_add = 8 - (self.column % 8);
+                for _ in 0..spaces_to_add {
+                    self.write_char_internal(b' ');
+                }
+            }
             byte => {
-                if self.column >= VGA_WIDTH {
-                    self.newline();
-                }
-
-                let pos = self.row * VGA_WIDTH + self.column;
-                let color_byte = (self.color as u16) << 8;
-                unsafe {
-                    self.buffer
-                        .add(pos)
-                        .write_volatile(color_byte | byte as u16);
-                }
-                self.column += 1;
+                self.write_char_internal(byte);
             }
         }
+    }
+
+    /// 内部辅助：写入普通字符（不处理控制字符）
+    ///
+    /// 为什么独立为方法：
+    /// - 制表符展开为多个空格时需要重用字符写入逻辑
+    /// - 避免在 write_byte 中嵌套递归或重复代码
+    fn write_char_internal(&mut self, byte: u8) {
+        if self.column >= VGA_WIDTH {
+            self.newline();
+        }
+
+        let pos = self.row * VGA_WIDTH + self.column;
+        let color_byte = (self.color as u16) << 8;
+        unsafe {
+            self.buffer
+                .add(pos)
+                .write_volatile(color_byte | byte as u16);
+        }
+        self.column += 1;
     }
 
     /// 换行：光标移到下一行开头，到底部则向上滚动
