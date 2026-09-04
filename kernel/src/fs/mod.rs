@@ -43,6 +43,7 @@ use crate::sync::Spinlock;
 /// VFS 全局状态
 /// 为什么用 Box：FileSystemState 包含多个 Vec 和缓存结构，
 /// 动态大小较大，Box 让它在堆上落位，锁内只存指针
+#[allow(dead_code)]
 struct FileSystemState {
     /// 根文件系统实例
     root_fs: Option<alloc::vec::Vec<u8>>,  // 占位符

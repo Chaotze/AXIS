@@ -35,6 +35,10 @@ pub extern "C" fn _boot_rust() -> ! {
     println!("\n[INIT] Initializing memory management...");
     axis_kernel::mm::init();
 
+    // 文件系统初始化（VFS、tmpfs、devfs、procfs、sysfs）
+    println!("\n[INIT] Initializing file system...");
+    axis_kernel::fs::init();
+
     // 任务子系统初始化（任务表、调度器、进程树根）
     println!("\n[INIT] Initializing task subsystem...");
     axis_kernel::task::init();

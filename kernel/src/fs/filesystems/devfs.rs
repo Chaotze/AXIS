@@ -4,9 +4,11 @@
 // 提供对虚拟设备的访问（/dev/null、/dev/zero 等）
 // 大多数文件都是字符设备或块设备
 
+#![allow(dead_code)]
+
 use crate::fs::vfs::{
     FileSystem, DirectoryEntry, FileMode, FileType,
-    InodeMetadata, InodeNumber, UnixTime
+    InodeMetadata, InodeNumber
 };
 use crate::lib::result::KernelResult;
 use alloc::vec::Vec;

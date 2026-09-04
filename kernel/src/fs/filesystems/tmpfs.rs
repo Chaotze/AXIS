@@ -4,9 +4,11 @@
 // 最简单的文件系统实现，完全基于内存。
 // 用于测试 VFS 框架和作为根文件系统。
 
+#![allow(dead_code)]
+
 use crate::fs::vfs::{
     FileSystem, DirectoryEntry, FileMode, FileType,
-    InodeMetadata, InodeNumber, OpenFlags, UnixTime
+    InodeMetadata, InodeNumber
 };
 use crate::lib::result::KernelResult;
 use alloc::vec::Vec;

@@ -4,6 +4,8 @@
 // 提供对进程和系统信息的访问（/proc/cpuinfo、/proc/meminfo 等）
 // 大多数文件是动态生成的
 
+#![allow(dead_code)]
+
 use crate::fs::vfs::{
     FileSystem, DirectoryEntry, FileMode, FileType,
     InodeMetadata, InodeNumber

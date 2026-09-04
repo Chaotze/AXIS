@@ -81,7 +81,7 @@ pub fn validate_path(path: &[u8]) -> KernelResult<()> {
 /// - 把 . 解析为"不动作"
 /// - 把 .. 记录为"上升一级"
 /// 返回规范化后的组件向量
-pub fn parse_path(path: &[u8]) -> KernelResult<ParsedPath> {
+pub fn parse_path(path: &[u8]) -> KernelResult<ParsedPath<'_>> {
     validate_path(path)?;
 
     let is_absolute = !path.is_empty() && path[0] == b'/';

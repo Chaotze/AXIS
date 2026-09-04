@@ -126,7 +126,7 @@ impl FileDescriptorTable {
     pub fn new() -> Self {
         // 为什么使用循环：Arc<OpenFile> 不是 Copy，
         // 需要逐个元素初始化为 None
-        let mut fds: [Option<Arc<OpenFile>>; 256] =
+        let fds: [Option<Arc<OpenFile>>; 256] =
             [None, None, None, None, None, None, None, None,
              None, None, None, None, None, None, None, None,
              None, None, None, None, None, None, None, None,

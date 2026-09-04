@@ -4,6 +4,8 @@
 // 提供对系统设备和驱动的访问（/sys/devices、/sys/class 等）
 // 类似 procfs，但更结构化
 
+#![allow(dead_code)]
+
 use crate::fs::vfs::{
     FileSystem, DirectoryEntry, FileMode, FileType,
     InodeMetadata, InodeNumber
