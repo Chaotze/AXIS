@@ -320,7 +320,7 @@ extern "C" fn init_task(_arg: u64) -> ! {
         if round % 1_000_000_000 == 0 {
             let s = stats();
             println!(
-                "[INIT] ticks={} switches={} runq={}",
+                "[INITTASK] ticks={} switches={} runq={}",
                 s.simulated_ticks, s.context_switches, s.runqueue_len
             );
         }
@@ -340,7 +340,7 @@ extern "C" fn demo_task(arg: u64) -> ! {
     loop {
         round += 1;
         if round % 1_000_000_000 == 0 {
-            println!("[T{}] round=1G", id);
+            println!("  [DEMOTASK {}] round=1G", id);
         }
     }
 }

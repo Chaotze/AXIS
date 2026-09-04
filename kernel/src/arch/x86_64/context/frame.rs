@@ -180,6 +180,7 @@ mod tests {
         // 用 16 对齐的泄漏缓冲区模拟任务栈（宿主测试环境；
         // 真实任务栈由 kmalloc(.., 16) 保证 16 字节对齐）
         #[repr(align(16))]
+        #[allow(dead_code)]
         struct StackBuf([u8; 4096]);
         let stack: &'static mut StackBuf = Box::leak(Box::new(StackBuf([0; 4096])));
         let top = (stack as *mut StackBuf as usize) + 4096;

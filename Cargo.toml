@@ -47,7 +47,7 @@ authors = ["Haoze Qin", "Borui Li", "Zhi Zheng"]
 #   - 当进行不兼容的 API 变更时升级 MAJOR 版本
 #   - 添加新功能但保持兼容时升级 MINOR 版本
 #   - 修复 bug 而不改变功能时升级 PATCH 版本
-version = "0.1.2"
+version = "0.1.3"
 
 # edition: 定义所有成员包使用的 Rust 版本
 edition = "2024"
