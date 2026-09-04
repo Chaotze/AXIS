@@ -22,9 +22,13 @@
 
 /// 最小抢占粒度（vruntime 差超过该值才允许抢占）
 ///
-/// 单位与 vruntime 一致（tick 数 @ 1kHz）；取 4 意味着
-/// 任务间至少相差 4 个 tick 的公平量才切换
-pub const MIN_PREEMPT_GRANULARITY: u64 = 4;
+/// 单位与 vruntime 一致；vr 记账以 1024 定标（每 tick 的
+/// 增量为 1024×1024/权重，见 cfs::calc_vruntime_delta），
+/// "4 个基准 tick"的公平量 = 4 × 1024 = 4096。
+/// 为什么定标：权重高于 1024（nice < 0）时，1 tick 的
+/// 增量 1024/权重会截断为 0，vr 永停 → 该任务永远最
+/// 小 → 饿死其余任务；定标后所有权重都有非零增量
+pub const MIN_PREEMPT_GRANULARITY: u64 = 4 * 1024;
 
 /// 判定：当前任务是否应被 vruntime 更小的任务抢占
 ///
@@ -75,12 +79,13 @@ mod tests {
 
     #[test]
     fn test_should_preempt_threshold() {
-        // 差 3 tick：不足粒度，不抢占
-        assert!(!should_preempt(103, 100));
-        // 恰好差 4：触发
-        assert!(should_preempt(104, 100));
+        let g = MIN_PREEMPT_GRANULARITY;
+        // 差 1 定标单位：不足粒度，不抢占
+        assert!(!should_preempt(100 + g - 1, 100));
+        // 恰好达到粒度：触发
+        assert!(should_preempt(100 + g, 100));
         // 落后很多：必然触发
-        assert!(should_preempt(1000, 100));
+        assert!(should_preempt(100 + g * 10, 100));
         // 领先于队首：不触发
         assert!(!should_preempt(90, 100));
     }

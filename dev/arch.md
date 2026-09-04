@@ -167,11 +167,24 @@ AXIS/
 │       │   │    TaskState 约 150KB，Box 堆分配避免引导栈大块
 │       │   │    拷贝；引导栈由 64KB 增至 256KB（mm 自测深层
 │       │   │    调用链 + 大静态布局曾溢出 64KB）。
-│       │   │ 5. 测试：unitest 宿主测试（task 组 11 个纯算法文件）
-│       │   │    + 内核启动自测 task::selftest（9 项：进程树/
-│       │   │    生命周期/信号/rlimit/CFS 公平性/亲和/负载均衡/
-│       │   │    命名空间/cgroup）在 QEMU 验证。
-│       │   └—— 锁序约定：TASK 为叶锁（不内持其他全局锁）———┘
+│       │   │ 5. 真实上下文切换：定时器中断内换栈 + iretq 式
+│       │   │    抢占切换（见 interrupt/entry.asm 与 task::tick_hook）；
+│       │   │    任务首次运行帧由 context/frame.rs 的 SwitchFrame
+│       │   │    构造（布局与中断存根保存序列逐字节镜像）；
+│       │   │    switch.asm 的协作式切换保留供主动让出路径。
+│       │   │    init 与 3 个演示内核线程（nice 5/0/-5）在
+│       │   │    QEMU 实测并发运行、输出比例与权重一致。
+│       │   │ 6. 中断纪律（自旋锁 + 抢占共存的 irqsave）：
+│       │   │    任务态访问 TASK/堆/PMM 锁与打印（WRITER）均
+│       │   │    屏蔽中断；否则任务持锁时被抢占、中断路径等
+│       │   │    同一把锁即死锁（初始化持锁期被首个 tick 打断
+│       │   │    是实测首坑）。vruntime 记账用 1024 定标，
+│       │   │    避免高权重任务每 tick 增量为 0 而饿死其余。
+│       │   │ 7. 测试：unitest 宿主测试（task 组 11 个纯算法文件
+│       │   │    + context/frame）+ 内核启动自测 task::selftest
+│       │   │    （9 项）在 QEMU 验证；多任务并发与公平性由
+│       │   │    演示线程的屏幕输出实证。
+│       │   └—— 锁序约定：TASK → PMM → KHEAP 单向，均 irqsave —┘
 │       │
 │       ├── fs/
 │       │   ├── mod.rs                          # VFS 抽象层入口
