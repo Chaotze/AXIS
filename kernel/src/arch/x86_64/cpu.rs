@@ -212,6 +212,56 @@ pub fn has_feature(feature: u32) -> bool {
     unsafe { CPU_FEATURES & feature != 0 }
 }
 
+/// 获取 CPU 品牌字符串
+///
+/// 通过 CPUID 叶子 0x80000002-0x80000004 获取 CPU 品牌名称
+/// 每个叶子返回 16 字节的 ASCII 字符串
+pub fn get_brand_string() -> [u8; 48] {
+    let mut brand = [0u8; 48];
+
+    for (i, leaf) in (0x80000002..=0x80000004).enumerate() {
+        let result = cpuid(leaf, 0);
+        let offset = i * 16;
+
+        // EAX
+        brand[offset] = (result.eax & 0xFF) as u8;
+        brand[offset + 1] = ((result.eax >> 8) & 0xFF) as u8;
+        brand[offset + 2] = ((result.eax >> 16) & 0xFF) as u8;
+        brand[offset + 3] = ((result.eax >> 24) & 0xFF) as u8;
+
+        // EBX
+        brand[offset + 4] = (result.ebx & 0xFF) as u8;
+        brand[offset + 5] = ((result.ebx >> 8) & 0xFF) as u8;
+        brand[offset + 6] = ((result.ebx >> 16) & 0xFF) as u8;
+        brand[offset + 7] = ((result.ebx >> 24) & 0xFF) as u8;
+
+        // ECX
+        brand[offset + 8] = (result.ecx & 0xFF) as u8;
+        brand[offset + 9] = ((result.ecx >> 8) & 0xFF) as u8;
+        brand[offset + 10] = ((result.ecx >> 16) & 0xFF) as u8;
+        brand[offset + 11] = ((result.ecx >> 24) & 0xFF) as u8;
+
+        // EDX
+        brand[offset + 12] = (result.edx & 0xFF) as u8;
+        brand[offset + 13] = ((result.edx >> 8) & 0xFF) as u8;
+        brand[offset + 14] = ((result.edx >> 16) & 0xFF) as u8;
+        brand[offset + 15] = ((result.edx >> 24) & 0xFF) as u8;
+    }
+
+    brand
+}
+
+/// 获取 CPU 特性掩码
+pub fn get_features() -> u32 {
+    unsafe { CPU_FEATURES }
+}
+
+/// 获取已启用的 CPUID 功能数（用于 /proc/cpuinfo 的 cpuid level）
+pub fn get_cpuid_level() -> u32 {
+    let result = cpuid(0, 0);
+    result.eax
+}
+
 // ---------------------------------------------------------------------
 // 中断标志保存/恢复（irqsave / irqrestore）
 // ---------------------------------------------------------------------
