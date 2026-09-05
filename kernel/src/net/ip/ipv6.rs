@@ -140,6 +140,75 @@ pub fn send_packet(_dest_ip: &[u8], _protocol: u8, data: &[u8]) -> KernelResult<
     Ok(data.len())
 }
 
+/// IPv6 地址自动配置（SLAAC - Stateless Address Autoconfiguration）
+/// 为什么需要：IPv6 节点可以从路由器通告中自动配置地址
+#[derive(Debug, Clone, Copy)]
+pub struct Ipv6AutoConfig {
+    /// 前缀
+    pub prefix: [u8; 8],
+    /// 前缀长度
+    pub prefix_length: u8,
+}
+
+impl Ipv6AutoConfig {
+    /// 从路由器通告中提取前缀
+    pub fn from_router_advertisement(prefix: [u8; 8], prefix_length: u8) -> Self {
+        Ipv6AutoConfig {
+            prefix,
+            prefix_length,
+        }
+    }
+
+    /// 使用 EUI-64 生成接口标识符（Interface ID）
+    /// 为什么需要：从 MAC 地址生成唯一的接口标识符
+    pub fn generate_interface_id(mac_address: &[u8; 6]) -> [u8; 8] {
+        let mut iid = [0u8; 8];
+
+        // EUI-64 格式：MAC[0:3] | FF | FE | MAC[3:6]
+        iid[0] = mac_address[0] ^ 0x02;  // 翻转本地位
+        iid[1] = mac_address[1];
+        iid[2] = mac_address[2];
+        iid[3] = 0xFF;
+        iid[4] = 0xFE;
+        iid[5] = mac_address[3];
+        iid[6] = mac_address[4];
+        iid[7] = mac_address[5];
+
+        iid
+    }
+
+    /// 生成链接本地地址（Link-local Address）
+    /// 为什么需要：每个 IPv6 节点都需要链接本地地址用于本地通信
+    pub fn generate_link_local_address(mac_address: &[u8; 6]) -> Ipv6Address {
+        let mut addr = [0u8; 16];
+
+        // 链接本地前缀：fe80:0000:0000:0000::/64
+        addr[0] = 0xfe;
+        addr[1] = 0x80;
+
+        // 接口标识符（后 8 字节）
+        let iid = Self::generate_interface_id(mac_address);
+        addr[8..16].copy_from_slice(&iid);
+
+        Ipv6Address::from_bytes(addr)
+    }
+
+    /// 生成全局单播地址（Global Unicast Address）
+    /// 为什么需要：用于全网通信的地址
+    pub fn generate_global_address(&self, mac_address: &[u8; 6]) -> Ipv6Address {
+        let mut addr = [0u8; 16];
+
+        // 复制前缀
+        addr[0..8].copy_from_slice(&self.prefix);
+
+        // 接口标识符
+        let iid = Self::generate_interface_id(mac_address);
+        addr[8..16].copy_from_slice(&iid);
+
+        Ipv6Address::from_bytes(addr)
+    }
+}
+
 /// 接收 IPv6 包
 /// 关键处理路径：验证 → Hop Limit 检查 → 上层分发
 pub fn recv_packet(data: &[u8]) -> KernelResult<()> {

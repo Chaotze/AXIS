@@ -192,8 +192,118 @@ pub fn handle_icmpv6(
 }
 
 // ============================================================
-// ICMPv6 自测
+// IPv6 邻居发现（NDP - Neighbor Discovery Protocol）
 // ============================================================
+
+/// 邻居请求包（Neighbor Solicitation）
+/// 用于地址解析和邻居不可达检测（NUD）
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy)]
+pub struct NeighborSolicitation {
+    /// 目标地址（要查找的 IPv6 地址）
+    pub target_addr: [u8; 16],
+}
+
+impl NeighborSolicitation {
+    /// 创建邻居请求包
+    pub fn new(target_addr: Ipv6Address) -> Self {
+        NeighborSolicitation {
+            target_addr: *target_addr.as_bytes(),
+        }
+    }
+
+    /// 将邻居请求包转换为字节数组
+    pub fn to_bytes(&self) -> [u8; 16] {
+        self.target_addr
+    }
+}
+
+/// 邻居通告包（Neighbor Advertisement）
+/// 用于响应邻居请求
+#[repr(C, packed)]
+#[derive(Debug, Clone, Copy)]
+pub struct NeighborAdvertisement {
+    /// 标志（R、S、O）和目标地址（下面的 4 字节是标志）
+    pub flags_and_target: [u8; 20],
+}
+
+impl NeighborAdvertisement {
+    /// 创建邻居通告包
+    /// 参数：
+    /// - target_addr: 要通告的 IPv6 地址
+    /// - router: 是否是路由器
+    /// - solicited: 是否是对请求的应答
+    /// - override_: 是否覆盖现有缓存条目
+    pub fn new(target_addr: Ipv6Address, router: bool, solicited: bool, override_: bool) -> Self {
+        let mut flags_and_target = [0u8; 20];
+
+        // 设置标志（第一个字节的高 3 位）
+        // R（Router）: bit 7
+        // S（Solicited）: bit 6
+        // O（Override）: bit 5
+        if router {
+            flags_and_target[0] |= 0x80;  // R flag
+        }
+        if solicited {
+            flags_and_target[0] |= 0x40;  // S flag
+        }
+        if override_ {
+            flags_and_target[0] |= 0x20;  // O flag
+        }
+
+        // 复制目标地址（从字节 4 开始）
+        flags_and_target[4..20].copy_from_slice(target_addr.as_bytes());
+
+        NeighborAdvertisement { flags_and_target }
+    }
+
+    /// 获取目标地址
+    pub fn target_addr(&self) -> Ipv6Address {
+        let mut addr = [0u8; 16];
+        addr.copy_from_slice(&self.flags_and_target[4..20]);
+        Ipv6Address::from_bytes(addr)
+    }
+
+    /// 检查是否是路由器
+    pub fn is_router(&self) -> bool {
+        (self.flags_and_target[0] & 0x80) != 0
+    }
+
+    /// 检查是否是对请求的应答
+    pub fn is_solicited(&self) -> bool {
+        (self.flags_and_target[0] & 0x40) != 0
+    }
+}
+
+/// 处理邻居请求
+/// 为什么需要：对方想知道我们的 MAC 地址
+pub fn handle_neighbor_solicitation(
+    _src_addr: Ipv6Address,
+    _target_addr: Ipv6Address,
+) -> NeighborAdvertisement {
+    // TODO: 检查目标地址是否是我们的地址
+    // TODO: 查找我们的 MAC 地址
+    // TODO: 创建并返回邻居通告
+
+    // 当前简化实现：创建一个通告包
+    NeighborAdvertisement::new(_target_addr, false, true, true)
+}
+
+/// 处理邻居通告
+/// 为什么需要：更新邻居缓存中的 MAC 地址映射
+pub fn handle_neighbor_advertisement(
+    src_addr: Ipv6Address,
+    _target_addr: Ipv6Address,
+    _mac_addr: [u8; 6],
+) -> KernelResult<()> {
+    // TODO: 验证目标地址
+    // TODO: 查询或创建邻居缓存条目
+    // TODO: 更新 MAC 地址映射
+    // TODO: 检查是否有待发送的包等待此地址解析
+
+    let _ = src_addr;
+    Ok(())
+}
 
 pub fn selftest() -> bool {
     // 1. ICMPv6 类型测试

@@ -148,6 +148,120 @@ impl TcpHeader {
 // TCP 连接管理
 // ============================================================
 
+/// TCP 拥塞控制状态
+/// 为什么需要拥塞控制：防止网络过载，提高吞吐量
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CongestionControlAlgorithm {
+    /// 慢启动（Slow Start）
+    SlowStart,
+    /// 拥塞避免（Congestion Avoidance）
+    CongestionAvoidance,
+    /// 快速恢复（Fast Recovery）
+    FastRecovery,
+}
+
+/// 拥塞控制参数
+#[derive(Debug, Clone, Copy)]
+pub struct CongestionControl {
+    /// 拥塞窗口（字节）
+    pub cwnd: u32,
+    /// 慢启动阈值（字节）
+    pub ssthresh: u32,
+    /// 当前算法
+    pub algorithm: CongestionControlAlgorithm,
+    /// 重复 ACK 计数
+    pub dup_ack_count: u32,
+}
+
+impl CongestionControl {
+    /// 创建新的拥塞控制器
+    pub fn new() -> Self {
+        // 初始 cwnd 为 10 个 MSS（最大段大小），假设 MSS 为 1460 字节
+        let mss = 1460u32;
+        CongestionControl {
+            cwnd: 10 * mss,
+            ssthresh: 65535,  // 初始 ssthresh 设为 64KB
+            algorithm: CongestionControlAlgorithm::SlowStart,
+            dup_ack_count: 0,
+        }
+    }
+
+    /// 处理数据被确认（ACK）
+    /// 为什么需要：收到 ACK 时增加拥塞窗口
+    pub fn on_ack(&mut self, _bytes_acked: u32) {
+        match self.algorithm {
+            CongestionControlAlgorithm::SlowStart => {
+                // 慢启动：每收到一个 ACK 就增加 1 个 MSS
+                let mss = 1460u32;
+                self.cwnd += mss;
+
+                // 当 cwnd >= ssthresh 时进入拥塞避免
+                if self.cwnd >= self.ssthresh {
+                    self.algorithm = CongestionControlAlgorithm::CongestionAvoidance;
+                }
+            }
+            CongestionControlAlgorithm::CongestionAvoidance => {
+                // 拥塞避免：每收到 cwnd 字节的数据后才增加 1 个 MSS
+                // 简化实现：每个 ACK 增加 MSS/cwnd
+                let mss = 1460u32;
+                self.cwnd += mss / self.cwnd.max(1);
+            }
+            CongestionControlAlgorithm::FastRecovery => {
+                // 快速恢复：收到新数据的 ACK 后回到拥塞避免
+                self.algorithm = CongestionControlAlgorithm::CongestionAvoidance;
+                self.dup_ack_count = 0;
+            }
+        }
+    }
+
+    /// 处理丢包（超时或三个重复 ACK）
+    /// 为什么需要：检测到丢包时减少窗口
+    pub fn on_loss(&mut self) {
+        let mss = 1460u32;
+
+        // 设置新的 ssthresh
+        self.ssthresh = (self.cwnd / 2).max(2 * mss);
+
+        // 进入快速恢复
+        self.cwnd = self.ssthresh + 3 * mss;
+        self.algorithm = CongestionControlAlgorithm::FastRecovery;
+        self.dup_ack_count = 0;
+    }
+
+    /// 处理重复 ACK
+    /// 为什么需要：三个重复 ACK 表示丢包
+    pub fn on_dup_ack(&mut self) {
+        self.dup_ack_count += 1;
+
+        if self.dup_ack_count == 3 {
+            // 触发快速重传
+            self.on_loss();
+        }
+    }
+
+    /// 获取当前允许发送的最大数据量
+    pub fn get_max_sendable(&self) -> u32 {
+        self.cwnd
+    }
+}
+
+/// TCP 重传状态
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetransmitState {
+    /// 待重传数据的序列号
+    pub seq_num: u32,
+    /// 重传次数
+    pub retransmit_count: usize,
+    /// 最后重传时间（毫秒时间戳）
+    pub last_retransmit_time: u64,
+    /// RTO（重传超时时间，毫秒）
+    pub rto_ms: u32,
+}
+
+// ============================================================
+// TCP 连接管理
+// ============================================================
+
 /// TCP 连接
 #[derive(Debug, Clone)]
 pub struct TcpConnection {
@@ -169,6 +283,14 @@ pub struct TcpConnection {
     pub recv_buffer: alloc::vec::Vec<u8>,
     /// 发送缓冲区
     pub send_buffer: alloc::vec::Vec<u8>,
+    /// TCP 发送窗口大小
+    pub snd_wnd: u32,
+    /// TCP 接收窗口大小
+    pub rcv_wnd: u32,
+    /// 最后一个已确认的序列号
+    pub last_acked_seq: u32,
+    /// 最后一个已发送的序列号
+    pub last_sent_seq: u32,
 }
 
 impl TcpConnection {
@@ -195,6 +317,10 @@ impl TcpConnection {
             rcv_seq: 0,
             recv_buffer: alloc::vec::Vec::new(),
             send_buffer: alloc::vec::Vec::new(),
+            snd_wnd: crate::net::config::TCP_RX_WINDOW_SIZE,  // 初始化为 65535
+            rcv_wnd: crate::net::config::TCP_RX_WINDOW_SIZE,
+            last_acked_seq: 0,
+            last_sent_seq: 0,
         }
     }
 
@@ -326,6 +452,83 @@ impl TcpConnection {
             }
             _ => Err(KernelError::InvalidArgument),
         }
+    }
+
+    /// 更新接收窗口大小
+    /// 为什么需要：流量控制，告诉对方可以发送多少数据
+    pub fn update_rcv_window(&mut self, available_space: u32) {
+        self.rcv_wnd = available_space.min(crate::net::config::TCP_RX_WINDOW_SIZE);
+    }
+
+    /// 获取发送窗口大小
+    /// 为什么需要：检查是否可以发送数据
+    pub fn get_snd_wnd(&self) -> u32 {
+        self.snd_wnd
+    }
+
+    /// 更新发送窗口（从对方的 ACK 中提取）
+    /// 为什么需要：对方告诉我们可以发送多少数据
+    pub fn update_snd_wnd(&mut self, window_size: u16) {
+        self.snd_wnd = window_size as u32;
+    }
+
+    /// 检查是否可以发送数据
+    /// 为什么需要：发送窗口不能为 0（接收方已满）
+    pub fn can_send_data(&self) -> bool {
+        self.snd_wnd > 0 && !self.send_buffer.is_empty()
+    }
+
+    /// 计算可发送的数据量
+    /// 为什么需要：不能超过对方的接收窗口
+    pub fn get_sendable_bytes(&self) -> usize {
+        let unsent = self.send_buffer.len() as u32;
+        let can_send = self.snd_wnd.saturating_sub(
+            self.last_sent_seq.saturating_sub(self.last_acked_seq)
+        );
+        (unsent.min(can_send)) as usize
+    }
+
+    /// 处理 ACK，更新已确认的序列号
+    /// 为什么需要：接收方确认了数据，可以删除发送缓冲区中的已确认数据
+    pub fn handle_received_ack(&mut self, ack_num: u32) -> KernelResult<()> {
+        // 检查 ACK 序列号是否有效
+        if ack_num > self.snd_seq && ack_num <= self.last_sent_seq.wrapping_add(1) {
+            self.last_acked_seq = ack_num;
+            Ok(())
+        } else {
+            Err(KernelError::InvalidArgument)
+        }
+    }
+
+    /// 标记需要重传
+    /// 为什么需要：当没有收到 ACK 时，需要重传数据
+    pub fn mark_for_retransmit(&mut self, current_time: u64) -> RetransmitState {
+        RetransmitState {
+            seq_num: self.last_acked_seq + 1,
+            retransmit_count: 0,
+            last_retransmit_time: current_time,
+            rto_ms: crate::net::config::TCP_RETRANSMIT_TIMEOUT,
+        }
+    }
+
+    /// 检查是否应该重传
+    /// 为什么需要：根据 RTO 和重传次数决定是否重新发送
+    pub fn should_retransmit(retransmit: &RetransmitState, current_time: u64) -> bool {
+        let elapsed = current_time.saturating_sub(retransmit.last_retransmit_time);
+
+        // 检查是否超过 RTO 且还未达到最大重传次数
+        elapsed >= (retransmit.rto_ms as u64) &&
+        retransmit.retransmit_count < crate::net::config::TCP_MAX_RETRANSMIT
+    }
+
+    /// 更新重传状态
+    /// 为什么需要：每次重传时更新计数和时间
+    pub fn update_retransmit(retransmit: &mut RetransmitState, current_time: u64) {
+        retransmit.retransmit_count += 1;
+        retransmit.last_retransmit_time = current_time;
+
+        // 指数退避：每次重传时将 RTO 加倍（最大到 60 秒）
+        retransmit.rto_ms = (retransmit.rto_ms * 2).min(60000);
     }
 }
 
