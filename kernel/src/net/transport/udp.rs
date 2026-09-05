@@ -185,8 +185,9 @@ impl Default for UdpSocket {
 
 /// 发送 UDP 数据包
 /// 为什么分离发送：便于上层协议（应用层）直接调用
+/// 处理流程：验证 → 打包 → 调用IP层发送
 pub fn send_packet(
-    src_ip: [u8; 4],
+    _src_ip: [u8; 4],
     src_port: u16,
     dst_ip: [u8; 4],
     dst_port: u16,
@@ -206,17 +207,28 @@ pub fn send_packet(
         return Err(KernelError::InvalidArgument);
     }
 
-    // TODO: 调用 IP 层发送
-    // 当前返回成功（占位符）
-    let _ = (src_ip, dst_ip, header);
+    // 构建完整的 UDP 包（头 + 载荷）
+    let mut packet = alloc::vec::Vec::with_capacity(total_len);
+    packet.extend_from_slice(&header.to_bytes());
+    packet.extend_from_slice(data);
+
+    // 调用 IP 层发送
+    // 协议号 17 = UDP
+    let _ = super::super::ip::send_packet(
+        &dst_ip,
+        crate::net::config::ip_protocol::UDP,
+        &packet,
+    )?;
+
     Ok(data.len())
 }
 
 /// 接收 UDP 数据包（由IP层调用）
 /// 为什么需要此函数：IP层识别协议号后分发给UDP处理
+/// 处理流程：解析包头 → 验证 → 查找套接字 → 存入缓冲区
 pub fn recv_packet(
-    src_ip: [u8; 4],
-    src_port: u16,
+    _src_ip: [u8; 4],
+    _src_port: u16,
     dst_port: u16,
     data: &[u8],
 ) -> KernelResult<()> {
@@ -239,13 +251,16 @@ pub fn recv_packet(
         return Err(KernelError::InvalidArgument);
     }
 
-    let _payload = &data[8..8 + payload_len];
+    let payload = &data[8..8 + payload_len];
 
     // TODO: 查询本地 UDP 套接字表（SOCKET_TABLE）
     // TODO: 将数据存入对应套接字的接收缓冲区
     // TODO: 通知应用层有数据可读（设置事件标志）
 
-    let _ = (src_ip, src_port);
+    // 当前简化实现：仅记录接收到的包信息
+    // 后续版本需要完整的套接字表管理
+    let _ = (_src_ip, _src_port, header, payload);
+
     Ok(())
 }
 

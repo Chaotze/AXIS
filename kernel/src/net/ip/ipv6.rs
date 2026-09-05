@@ -141,18 +141,55 @@ pub fn send_packet(_dest_ip: &[u8], _protocol: u8, data: &[u8]) -> KernelResult<
 }
 
 /// 接收 IPv6 包
+/// 关键处理路径：验证 → Hop Limit 检查 → 上层分发
 pub fn recv_packet(data: &[u8]) -> KernelResult<()> {
+    if data.len() < 40 {
+        return Err(KernelError::InvalidArgument);
+    }
+
     let header = Ipv6Header::from_bytes(data)?;
 
-    // 检查跳数限制
+    // 1. 检查跳数限制（Hop Limit，等同于 IPv4 的 TTL）
+    // 为什么需要检查：防止无限转发，确保数据包最终被丢弃
     if header.hop_limit() == 0 {
-        // TODO: 发送 ICMPv6 超时
+        // TODO: 发送 ICMPv6 超时通知给源地址
         return Err(KernelError::Other("Hop limit exceeded"));
     }
 
-    // TODO: 处理 IPv6 扩展头
-    // TODO: 分发给上层协议
+    // 2. 处理 IPv6 扩展头（当前简化实现，暂不处理）
+    // 为什么需要扩展头：IPv6 支持多种扩展头（路由头、Hop-by-Hop 选项等）
+    // TODO: 解析下一个头，处理扩展头链
 
+    // 3. 获取有效负载（跳过 40 字节的 IPv6 头）
+    let payload_start = 40;
+    if data.len() < payload_start {
+        return Err(KernelError::InvalidArgument);
+    }
+
+    let payload = &data[payload_start..];
+    let protocol = header.next_header();
+
+    // 4. 根据协议号分发给上层处理
+    match protocol {
+        // ICMPv6 处理
+        crate::net::config::ip_protocol::ICMPV6 => {
+            // TODO: 调用 icmpv6::recv_icmpv6()
+        }
+        // TCP 处理
+        crate::net::config::ip_protocol::TCP => {
+            // TODO: 调用传输层接收函数
+        }
+        // UDP 处理
+        crate::net::config::ip_protocol::UDP => {
+            // TODO: 调用传输层接收函数
+        }
+        _ => {
+            // 不支持的协议号
+            return Err(KernelError::Unsupported);
+        }
+    }
+
+    let _ = payload;  // 占位符，避免未使用警告
     Ok(())
 }
 

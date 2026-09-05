@@ -176,6 +176,7 @@ impl IcmpHeader {
 // ============================================================
 
 /// 处理接收到的 ICMP 包
+/// 为什么需要这个函数：IP层接收到ICMP协议的包后分发到此处理
 pub fn handle_icmp(
     _src_ip: Ipv4Address,
     _dst_ip: Ipv4Address,
@@ -198,6 +199,16 @@ pub fn handle_icmp(
     }
 
     Ok(())
+}
+
+/// 接收 ICMP 包的公开函数（供 IPv4 调用）
+/// 为什么需要这个函数：IPv4层需要一个统一的接收入口
+pub fn recv_icmp(
+    data: &[u8],
+    src_ip: Ipv4Address,
+    dst_ip: Ipv4Address,
+) -> KernelResult<()> {
+    handle_icmp(src_ip, dst_ip, data)
 }
 
 // ============================================================

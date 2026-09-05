@@ -173,19 +173,25 @@ pub struct TcpConnection {
 
 impl TcpConnection {
     /// 创建新的 TCP 连接
+    /// 使用梅森旋转算法生成随机初始序列号（ISS）
+    /// 为什么需要随机 ISS：RFC 793 要求防止旧连接的数据被新连接误认
     pub fn new(
         src_ip: [u8; 4],
         dst_ip: [u8; 4],
         src_port: u16,
         dst_port: u16,
     ) -> Self {
+        // 使用全局随机数生成器获取随机初始序列号
+        // 取 u64 的低 32 位作为 TCP 序列号
+        let snd_seq = (crate::lib::random::random_u64() as u32).wrapping_add(1);
+
         TcpConnection {
             src_ip,
             dst_ip,
             src_port,
             dst_port,
             state: TcpState::Closed,
-            snd_seq: 1000,  // 简化版，应该随机初始化
+            snd_seq,
             rcv_seq: 0,
             recv_buffer: alloc::vec::Vec::new(),
             send_buffer: alloc::vec::Vec::new(),
@@ -328,17 +334,22 @@ impl TcpConnection {
 // ============================================================
 
 /// 发送 TCP 数据包
+/// 为什么分离发送：便于连接管理层调用
 pub fn send_packet(src_port: u16, dst_port: u16, data: &[u8]) -> KernelResult<usize> {
     // 创建 TCP 包头
+    // TODO: 从连接表查询对应连接的状态和序列号
+    // 当前为简化版实现
     let _header = TcpHeader::new(src_port, dst_port, 0, tcp_flags::ACK);
 
-    // TODO: 查询连接表
-    // TODO: 将 TCP 包交给 IP 层发送
-    // 暂时返回成功
+    // TODO: 调用 IP 层发送（协议号 6 = TCP）
+    // TODO: 处理重传逻辑
+    // 当前返回成功（占位符）
+    let _ = _header;
     Ok(data.len())
 }
 
 /// 接收 TCP 数据包
+/// 为什么需要此函数：IP 层识别协议号后分发给 TCP 处理
 pub fn recv_packet(data: &[u8]) -> KernelResult<()> {
     let _header = TcpHeader::from_bytes(data)?;
 
@@ -346,6 +357,7 @@ pub fn recv_packet(data: &[u8]) -> KernelResult<()> {
     // TODO: 根据连接状态和标志位处理（状态机）
     // TODO: 处理数据或发送 ACK
 
+    let _ = _header;
     Ok(())
 }
 
@@ -380,46 +392,49 @@ pub fn create_fin(src_port: u16, dst_port: u16, seq_num: u32) -> TcpHeader {
 pub fn selftest() -> bool {
     // 1. TCP 包头创建
     let header = TcpHeader::new(12345, 80, 1000, tcp_flags::SYN);
-    assert_eq!(header.src_port(), 12345, "源端口不正确");
-    assert_eq!(header.dst_port(), 80, "目标端口不正确");
-    assert_eq!(header.seq_num(), 1000, "序列号不正确");
-    assert!(header.has_syn(), "SYN 标志未设置");
+    assert_eq!(header.src_port(), 12345, "Source port mismatch");
+    assert_eq!(header.dst_port(), 80, "Destination port mismatch");
+    assert_eq!(header.seq_num(), 1000, "Sequence number mismatch");
+    assert!(header.has_syn(), "SYN flag not set");
 
     // 2. SYN+ACK 包创建
     let synack = create_synack(80, 12345, 2000, 1001);
-    assert!(synack.has_syn(), "SYN 标志未设置");
-    assert!(synack.has_ack(), "ACK 标志未设置");
-    assert_eq!(synack.ack_num(), 1001, "确认号不正确");
+    assert!(synack.has_syn(), "SYN flag not set");
+    assert!(synack.has_ack(), "ACK flag not set");
+    assert_eq!(synack.ack_num(), 1001, "Acknowledgment number mismatch");
 
     // 3. 包头序列化和解析
     let bytes = header.to_bytes();
     let parsed = TcpHeader::from_bytes(&bytes).unwrap_or_else(|_| {
-        panic!("TCP 包头解析失败");
+        panic!("TCP header parsing failed");
     });
-    assert_eq!(parsed.src_port(), header.src_port(), "解析后源端口不匹配");
+    assert_eq!(parsed.src_port(), header.src_port(), "Parsed source port mismatch");
 
-    // 4. TCP 连接创建
+    // 4. TCP 连接创建（注意：初始 seq 现在随机化）
     let mut conn = TcpConnection::new(
         [192, 168, 1, 10],
         [8, 8, 8, 8],
         12345,
         80,
     );
-    assert_eq!(conn.state, TcpState::Closed, "初始状态应为 CLOSED");
+    assert_eq!(conn.state, TcpState::Closed, "Initial state should be CLOSED");
+
+    // 保存客户端的初始序列号以供后续验证
+    let client_initial_seq = conn.snd_seq;
 
     // 5. 客户端三次握手测试
-    // 第一步：客户端发起 SYN
+    // Step 1: 客户端发起 SYN
     conn.initiate_connection().unwrap_or_else(|_| {
-        panic!("initiate_connection 失败");
+        panic!("initiate_connection failed");
     });
-    assert_eq!(conn.state, TcpState::SynSent, "应转换为 SYN_SENT");
+    assert_eq!(conn.state, TcpState::SynSent, "Should transition to SYN_SENT");
 
-    // 第二步：客户端收到服务器的 SYN+ACK（seq=2000, ack=1001）
-    conn.handle_synack(1001, 2000).unwrap_or_else(|_| {
-        panic!("handle_synack 失败");
+    // Step 2: 客户端收到服务器的 SYN+ACK（seq=2000, ack=client_seq+1）
+    conn.handle_synack(client_initial_seq + 1, 2000).unwrap_or_else(|_| {
+        panic!("handle_synack failed");
     });
-    assert_eq!(conn.state, TcpState::Established, "应转换为 ESTABLISHED");
-    assert_eq!(conn.rcv_seq, 2000, "rcv_seq 应为 2000");
+    assert_eq!(conn.state, TcpState::Established, "Should transition to ESTABLISHED");
+    assert_eq!(conn.rcv_seq, 2000, "rcv_seq should be 2000");
 
     // 6. 服务器三次握手测试
     let mut server_conn = TcpConnection::new(
@@ -429,35 +444,38 @@ pub fn selftest() -> bool {
         12345,
     );
 
-    // 第一步：服务器监听
+    // 保存服务器的初始序列号
+    let server_initial_seq = server_conn.snd_seq;
+
+    // Step 1: 服务器监听
     server_conn.listen().unwrap_or_else(|_| {
-        panic!("listen 失败");
+        panic!("listen failed");
     });
-    assert_eq!(server_conn.state, TcpState::Listen, "应为 LISTEN");
+    assert_eq!(server_conn.state, TcpState::Listen, "Should be LISTEN");
 
-    // 第二步：服务器收到客户端的 SYN（seq=1000）
+    // Step 2: 服务器收到客户端的 SYN（seq=1000）
     server_conn.handle_syn(1000).unwrap_or_else(|_| {
-        panic!("handle_syn 失败");
+        panic!("handle_syn failed");
     });
-    assert_eq!(server_conn.state, TcpState::SynRecvd, "应转换为 SYN_RCVD");
-    assert_eq!(server_conn.rcv_seq, 1000, "rcv_seq 应为 1000");
+    assert_eq!(server_conn.state, TcpState::SynRecvd, "Should transition to SYN_RCVD");
+    assert_eq!(server_conn.rcv_seq, 1000, "rcv_seq should be 1000");
 
-    // 第三步：服务器收到客户端的 ACK（ack=snd_seq+1）
-    server_conn.handle_ack(server_conn.snd_seq + 1).unwrap_or_else(|_| {
-        panic!("handle_ack 失败");
+    // Step 3: 服务器收到客户端的 ACK（ack=server_seq+1）
+    server_conn.handle_ack(server_initial_seq + 1).unwrap_or_else(|_| {
+        panic!("handle_ack failed");
     });
-    assert_eq!(server_conn.state, TcpState::Established, "应转换为 ESTABLISHED");
+    assert_eq!(server_conn.state, TcpState::Established, "Should transition to ESTABLISHED");
 
     // 7. 数据存储和接收测试
     let test_data = b"Hello TCP";
     server_conn.store_received_data(test_data);
-    assert_eq!(server_conn.get_recv_buffer(), test_data, "接收数据不匹配");
+    assert_eq!(server_conn.get_recv_buffer(), test_data, "Received data mismatch");
 
     // 8. 连接关闭测试
     server_conn.close_connection().unwrap_or_else(|_| {
-        panic!("close_connection 失败");
+        panic!("close_connection failed");
     });
-    assert_eq!(server_conn.state, TcpState::FinWait1, "应转换为 FIN_WAIT_1");
+    assert_eq!(server_conn.state, TcpState::FinWait1, "Should transition to FIN_WAIT_1");
 
     true
 }

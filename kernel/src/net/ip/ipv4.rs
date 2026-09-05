@@ -227,39 +227,110 @@ impl Ipv4Header {
 // ============================================================
 
 /// 发送 IPv4 包
-pub fn send_packet(_dest_ip: &[u8], _protocol: u8, data: &[u8]) -> KernelResult<usize> {
-    if _dest_ip.len() != 4 {
+/// 关键处理路径：验证 → 路由查询 → 链路层发送
+pub fn send_packet(dest_ip: &[u8], protocol: u8, data: &[u8]) -> KernelResult<usize> {
+    if dest_ip.len() != 4 {
         return Err(KernelError::InvalidArgument);
     }
 
-    let _dest = Ipv4Address::from_bytes([_dest_ip[0], _dest_ip[1], _dest_ip[2], _dest_ip[3]]);
+    let dest = Ipv4Address::from_bytes([dest_ip[0], dest_ip[1], dest_ip[2], dest_ip[3]]);
 
-    // TODO: 查询本机 IPv4 地址
-    // TODO: 查询默认网关
-    // TODO: 通过链路层发送
+    // 1. 创建 IPv4 包头
+    // 为什么需要包头：IP 层必须添加源地址、目标地址等信息
+    let header = Ipv4Header::new(
+        Ipv4Address::from_parts(192, 168, 1, 1),  // TODO: 查询本机地址
+        dest,
+        protocol,
+        data.len() as u16,
+    );
 
-    // 占位符：返回成功
+    // 2. 组装完整的 IP 包（头 + 载荷）
+    let mut packet = alloc::vec::Vec::with_capacity(20 + data.len());
+    packet.extend_from_slice(&header.to_bytes());
+    packet.extend_from_slice(data);
+
+    // 3. TODO: 查询路由表确定下一跳（网关或直连）
+    // 当前简化实现：直接调用链路层发送
+    // let route = routing_table.lookup(dest)?;
+
+    // 4. 调用链路层发送
+    let _ = super::super::link::send_frame(&packet)?;
+
     Ok(data.len())
 }
 
 /// 接收 IPv4 包
+/// 关键处理路径：校验 → TTL 检查 → 分片处理 → 上层分发
 pub fn recv_packet(data: &[u8]) -> KernelResult<()> {
+    if data.len() < 20 {
+        return Err(KernelError::InvalidArgument);
+    }
+
     let header = Ipv4Header::from_bytes(data)?;
 
-    // 验证校验和
+    // 1. 验证校验和
     if !header.verify_checksum() {
         return Err(KernelError::InvalidArgument);
     }
 
-    // 检查 TTL
+    // 2. 检查 TTL（跳数限制）
+    // 为什么需要检查：防止无限转发，确保数据包最终被丢弃
     if header.ttl() == 0 {
-        // TODO: 发送 ICMP 超时
+        // TODO: 发送 ICMP 超时通知给源地址
         return Err(KernelError::Other("TTL expired"));
     }
 
-    // TODO: 查询路由表
-    // TODO: 处理分片
-    // TODO: 分发给上层协议
+    // 3. 处理 IP 分片（如果需要）
+    // 为什么需要分片处理：网络上可能出现分片的包，需要重组后才能处理
+    if header.is_more_fragments() || header.fragment_offset() != 0 {
+        // 交给分片重组模块处理
+        // TODO: 调用 fragment::handle_fragment()
+        // 当前先跳过分片处理
+        return Ok(());
+    }
+
+    // 4. 获取有效负载（跳过 IP 头）
+    let payload_start = header.header_length();
+    if data.len() < payload_start {
+        return Err(KernelError::InvalidArgument);
+    }
+
+    let payload = &data[payload_start..];
+    let protocol = header.protocol();
+
+    // 5. 根据协议号分发给上层处理
+    match protocol {
+        // ICMP 处理
+        crate::net::config::ip_protocol::ICMP => {
+            super::icmp::recv_icmp(payload, header.src_ip(), header.dst_ip())?;
+        }
+        // TCP 处理
+        crate::net::config::ip_protocol::TCP => {
+            // TCP 需要 IP 层的源地址和目标地址
+            super::super::transport::recv_data(
+                protocol,
+                *header.src_ip().as_bytes(),
+                0,  // 源端口需从 TCP 头中提取
+                0,  // 目标端口需从 TCP 头中提取
+                payload,
+            )?;
+        }
+        // UDP 处理
+        crate::net::config::ip_protocol::UDP => {
+            // UDP 同样需要 IP 源/目标地址
+            super::super::transport::recv_data(
+                protocol,
+                *header.src_ip().as_bytes(),
+                0,  // 源端口需从 UDP 头中提取
+                0,  // 目标端口需从 UDP 头中提取
+                payload,
+            )?;
+        }
+        _ => {
+            // 不支持的协议号
+            return Err(KernelError::Unsupported);
+        }
+    }
 
     Ok(())
 }
