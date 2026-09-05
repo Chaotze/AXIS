@@ -31,6 +31,10 @@ pub extern "C" fn _boot_rust() -> ! {
     println!("\n[INIT] Initializing architecture...");
     axis_kernel::arch::init();
 
+    // ACPI 早期拷贝：必须在 PMM 接管内存前完成，否则 RAM 顶部的
+    // 固件表会被内存管理器元数据覆盖（见 drivers/acpi/mod.rs 说明）
+    axis_kernel::drivers::acpi::init_early();
+
     // 内存管理初始化（物理内存 → 堆 → 虚拟内存）
     println!("\n[INIT] Initializing memory management...");
     axis_kernel::mm::init();
