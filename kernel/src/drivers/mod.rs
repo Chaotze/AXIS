@@ -28,9 +28,9 @@ pub mod acpi;
 pub mod pci;
 pub mod display;
 pub mod input;
+pub mod block;
 
 // 以下子模块随阶段 6 推进逐个接入：
-// pub mod block;
 // pub mod nic;
 
 /// 设备驱动初始化入口（由 main.rs 调用）
@@ -59,8 +59,12 @@ pub fn init() {
     println!("[DRV] Initializing input...");
     input::init();
 
+    // 6. 块设备驱动（RamDisk 常驻 + 硬件探测）
+    println!("[DRV] Initializing block devices...");
+    block::init();
+
     // 后续子系统初始化随模块接入逐个开启：
-    // block::init(); nic::init();
+    // nic::init();
 
     // 运行设备驱动自测
     selftest();
@@ -75,6 +79,7 @@ pub fn selftest() -> bool {
     all &= t("pci enumeration", pci::selftest());
     all &= t("display framebuffer", display::selftest());
     all &= t("input ps2 decoders", input::selftest());
+    all &= t("block devices", block::selftest());
     // 后续子系统的自测由各自模块的 selftest 提供，随模块接入逐步开启
     println!("[DRV-SELFTEST] Result: {}", if all { "ALL PASS" } else { "FAILED" });
     all
