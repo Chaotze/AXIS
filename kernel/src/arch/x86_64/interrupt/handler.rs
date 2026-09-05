@@ -168,6 +168,18 @@ pub fn handle_irq(vector: usize, frame: &InterruptStackFrame) -> usize {
             // 定时器中断：时钟记账 → EOI → 调度 tick 钩子（可能切换）
             handle_timer_interrupt(frame)
         }
+        33 => {
+            // 键盘（IRQ1）：读取扫描码并解码入队
+            crate::drivers::input::keyboard_irq();
+            super::apic::send_eoi();
+            0
+        }
+        44 => {
+            // 鼠标（IRQ12）：读取数据包字节并解码入队
+            crate::drivers::input::mouse_irq();
+            super::apic::send_eoi();
+            0
+        }
         _ => {
             println!("Unhandled IRQ: {}", vector);
             // 发送 EOI

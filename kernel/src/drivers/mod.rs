@@ -27,9 +27,9 @@ pub mod serial;
 pub mod acpi;
 pub mod pci;
 pub mod display;
+pub mod input;
 
 // 以下子模块随阶段 6 推进逐个接入：
-// pub mod input;
 // pub mod block;
 // pub mod nic;
 
@@ -55,8 +55,12 @@ pub fn init() {
     println!("[DRV] Initializing display...");
     let _ = display::init();
 
+    // 5. 输入驱动（PS/2 键盘/鼠标，IRQ1/12）
+    println!("[DRV] Initializing input...");
+    input::init();
+
     // 后续子系统初始化随模块接入逐个开启：
-    // input::init(); block::init(); nic::init();
+    // block::init(); nic::init();
 
     // 运行设备驱动自测
     selftest();
@@ -70,6 +74,7 @@ pub fn selftest() -> bool {
     all &= t("acpi tables", acpi::selftest());
     all &= t("pci enumeration", pci::selftest());
     all &= t("display framebuffer", display::selftest());
+    all &= t("input ps2 decoders", input::selftest());
     // 后续子系统的自测由各自模块的 selftest 提供，随模块接入逐步开启
     println!("[DRV-SELFTEST] Result: {}", if all { "ALL PASS" } else { "FAILED" });
     all
