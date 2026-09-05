@@ -14,6 +14,26 @@ pub const IP_MAX_LENGTH: usize = MTU - 14;  // 14 = 以太网头长度
 pub const NET_BUFFER_POOL_SIZE: usize = 256;
 
 // ============================================================
+// ARP 配置
+// ============================================================
+
+/// ARP 缓存超时（秒）
+pub const ARP_CACHE_TIMEOUT: u32 = 600;  // 10 分钟
+
+/// ARP 缓存表最大条目数
+pub const ARP_TABLE_MAX_ENTRIES: usize = 256;
+
+// ============================================================
+// IP 分片配置
+// ============================================================
+
+/// IP 分片超时（秒）
+pub const IP_FRAGMENT_TIMEOUT: u32 = 15;
+
+/// IP 分片重组表最大条目数
+pub const IP_FRAGMENT_TABLE_MAX: usize = 128;
+
+// ============================================================
 // 以太网配置
 // ============================================================
 
@@ -30,16 +50,6 @@ pub const ETH_HEADER_LEN: usize = 14;
 pub const ETH_ADDR_LEN: usize = 6;
 
 // ============================================================
-// ARP 配置
-// ============================================================
-
-/// ARP 缓存条目超时时间（秒）
-pub const ARP_CACHE_TIMEOUT: u32 = 600;  // 10 分钟
-
-/// ARP 表最大条目数
-pub const ARP_TABLE_MAX_ENTRIES: usize = 128;
-
-// ============================================================
 // IP 层配置
 // ============================================================
 
@@ -50,12 +60,6 @@ pub const IPV6_ADDR_LEN: usize = 16;
 
 /// IP 包头最小长度
 pub const IP_MIN_HEADER_LEN: usize = 20;  // IPv4
-
-/// IP 分片重组超时（秒）
-pub const IP_FRAGMENT_TIMEOUT: u32 = 15;
-
-/// IP 分片表最大条目数
-pub const IP_FRAGMENT_TABLE_MAX: usize = 64;
 
 /// 路由表最大条目数
 pub const ROUTING_TABLE_MAX_ENTRIES: usize = 256;

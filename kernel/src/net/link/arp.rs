@@ -185,10 +185,143 @@ impl ArpEntry {
 }
 
 // ============================================================
-// ARP 协议处理
+// ARP 缓存全局管理
 // ============================================================
 
-/// 创建 ARP 请求包
+use crate::sync::Spinlock;
+
+/// 全局 ARP 缓存表
+/// 为什么使用 Spinlock：在中断禁用状态下保护访问
+static ARP_CACHE: Spinlock<ArpCache> = Spinlock::new(ArpCache::new());
+
+/// ARP 缓存表结构
+pub struct ArpCache {
+    /// ARP 缓存条目列表
+    entries: alloc::vec::Vec<ArpEntry>,
+}
+
+impl ArpCache {
+    /// 创建空的 ARP 缓存
+    pub const fn new() -> Self {
+        ArpCache {
+            entries: alloc::vec::Vec::new(),
+        }
+    }
+
+    /// 添加或更新 ARP 缓存条目
+    /// 为什么需要：学习新的 IP-MAC 映射或更新现有条目
+    pub fn add_or_update(
+        &mut self,
+        ip: Ipv4Address,
+        mac: MacAddress,
+        current_time: u64,
+    ) -> KernelResult<()> {
+        // 查找是否已存在
+        if let Some(entry) = self.entries.iter_mut().find(|e| e.ip == ip) {
+            // 更新现有条目
+            entry.mac = mac;
+            entry.state = ArpEntryState::Reachable;
+            entry.timestamp = current_time;
+            entry.failures = 0;
+        } else {
+            // 添加新条目
+            if self.entries.len() >= crate::net::config::ARP_TABLE_MAX_ENTRIES {
+                // 表满，删除最老的条目
+                self.entries.remove(0);
+            }
+
+            let mut entry = ArpEntry::new(ip, mac);
+            entry.timestamp = current_time;
+            self.entries.push(entry);
+        }
+
+        Ok(())
+    }
+
+    /// 查询 ARP 缓存
+    /// 返回 MAC 地址或缓存状态
+    pub fn lookup(&self, ip: Ipv4Address, current_time: u64) -> Option<MacAddress> {
+        for entry in &self.entries {
+            if entry.ip == ip {
+                // 检查是否过期
+                if entry.is_expired(current_time, crate::net::config::ARP_CACHE_TIMEOUT as u64) {
+                    return None;  // 过期条目视为未找到
+                }
+
+                match entry.state {
+                    ArpEntryState::Reachable => return Some(entry.mac),
+                    _ => return None,
+                }
+            }
+        }
+        None
+    }
+
+    /// 标记条目失败
+    /// 为什么需要：追踪 ARP 请求失败，超过阈值后删除条目
+    pub fn mark_failed(&mut self, ip: Ipv4Address) -> KernelResult<()> {
+        if let Some(entry) = self.entries.iter_mut().find(|e| e.ip == ip) {
+            entry.failures += 1;
+            if entry.failures >= 3 {
+                // 失败次数过多，标记为不可达
+                entry.state = ArpEntryState::Failed;
+            }
+            Ok(())
+        } else {
+            Err(KernelError::NotFound)
+        }
+    }
+
+    /// 删除 ARP 缓存条目
+    pub fn remove(&mut self, ip: Ipv4Address) -> KernelResult<()> {
+        let initial_len = self.entries.len();
+        self.entries.retain(|e| e.ip != ip);
+
+        if self.entries.len() == initial_len {
+            Err(KernelError::NotFound)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// 清空所有过期条目
+    pub fn cleanup_expired(&mut self, current_time: u64) {
+        let timeout = crate::net::config::ARP_CACHE_TIMEOUT as u64;
+        self.entries.retain(|e| !e.is_expired(current_time, timeout));
+    }
+
+    /// 获取缓存大小
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+/// 全局 ARP 缓存访问接口
+pub fn add_or_update(ip: Ipv4Address, mac: MacAddress, current_time: u64) -> KernelResult<()> {
+    let mut cache = ARP_CACHE.lock();
+    cache.add_or_update(ip, mac, current_time)
+}
+
+pub fn lookup(ip: Ipv4Address, current_time: u64) -> Option<MacAddress> {
+    let cache = ARP_CACHE.lock();
+    cache.lookup(ip, current_time)
+}
+
+pub fn mark_failed(ip: Ipv4Address) -> KernelResult<()> {
+    let mut cache = ARP_CACHE.lock();
+    cache.mark_failed(ip)
+}
+
+pub fn remove(ip: Ipv4Address) -> KernelResult<()> {
+    let mut cache = ARP_CACHE.lock();
+    cache.remove(ip)
+}
+
+pub fn cleanup_expired(current_time: u64) {
+    let mut cache = ARP_CACHE.lock();
+    cache.cleanup_expired(current_time);
+}
+
 pub fn create_request(
     sender_mac: MacAddress,
     sender_ip: Ipv4Address,

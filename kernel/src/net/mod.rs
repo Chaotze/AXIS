@@ -85,6 +85,10 @@ pub fn init() {
     *guard = Some(state);
     drop(guard);
 
+    // 初始化路由表
+    // 为什么需要在这里初始化：系统启动时设置默认路由
+    ip::routing::init_routing_table();
+
     // 恢复中断
     unsafe { crate::arch::x86_64::cpu::irq_restore(flags); }
 

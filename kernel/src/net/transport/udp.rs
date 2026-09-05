@@ -265,16 +265,108 @@ pub fn recv_packet(
 }
 
 // ============================================================
-// UDP 套接字表管理
+// UDP 套接字表全局管理
 // ============================================================
 
-/// UDP 套接字表项（用于管理多个UDP套接字）
-/// 为什么需要套接字表：在网络栈中维护全局的套接字映射
-pub struct UdpSocketEntry {
-    /// 套接字文件描述符（或ID）
-    pub fd: u32,
-    /// 套接字本身
-    pub socket: UdpSocket,
+use crate::sync::Spinlock;
+
+/// 全局 UDP 套接字表
+static UDP_SOCKETS: Spinlock<UdpSocketTable> = Spinlock::new(UdpSocketTable::new());
+
+/// UDP 套接字表
+pub struct UdpSocketTable {
+    /// 套接字列表
+    sockets: alloc::vec::Vec<(u16, UdpSocket)>,  // (端口, Socket)
+}
+
+impl UdpSocketTable {
+    /// 创建空的套接字表
+    pub const fn new() -> Self {
+        UdpSocketTable {
+            sockets: alloc::vec::Vec::new(),
+        }
+    }
+
+    /// 创建新的 UDP 套接字
+    pub fn create(&mut self, local_port: u16, local_ip: [u8; 4]) -> KernelResult<()> {
+        // 检查端口是否已被使用
+        if self.sockets.iter().any(|(port, _)| *port == local_port) {
+            return Err(KernelError::InvalidArgument);  // 端口已占用
+        }
+
+        if self.sockets.len() >= crate::net::config::UDP_SOCKET_MAX {
+            return Err(KernelError::OutOfMemory);
+        }
+
+        let mut socket = UdpSocket::new();
+        socket.bind(local_ip, local_port)?;
+        self.sockets.push((local_port, socket));
+
+        Ok(())
+    }
+
+    /// 查找套接字
+    pub fn find(&self, local_port: u16) -> Option<&UdpSocket> {
+        self.sockets.iter().find(|(port, _)| *port == local_port).map(|(_, socket)| socket)
+    }
+
+    /// 查找套接字（可变引用）
+    pub fn find_mut(&mut self, local_port: u16) -> Option<&mut UdpSocket> {
+        self.sockets.iter_mut().find(|(port, _)| *port == local_port).map(|(_, socket)| socket)
+    }
+
+    /// 关闭套接字
+    pub fn close(&mut self, local_port: u16) -> KernelResult<()> {
+        let initial_len = self.sockets.len();
+        self.sockets.retain(|(port, _)| *port != local_port);
+
+        if self.sockets.len() == initial_len {
+            Err(KernelError::NotFound)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// 接收数据到指定端口的套接字
+    pub fn deliver_data(
+        &mut self,
+        _src_ip: [u8; 4],
+        src_port: u16,
+        dst_port: u16,
+        data: &[u8],
+    ) -> KernelResult<()> {
+        if let Some(socket) = self.find_mut(dst_port) {
+            if socket.is_bound() {
+                socket.store_received_data((_src_ip, src_port), data);
+                Ok(())
+            } else {
+                Err(KernelError::InvalidArgument)
+            }
+        } else {
+            Err(KernelError::NotFound)  // 没有套接字监听此端口
+        }
+    }
+
+    /// 获取套接字表大小
+    pub fn len(&self) -> usize {
+        self.sockets.len()
+    }
+}
+
+/// 全局 UDP 套接字表访问接口
+pub fn create_socket(local_port: u16, local_ip: [u8; 4]) -> KernelResult<()> {
+    let mut table = UDP_SOCKETS.lock();
+    table.create(local_port, local_ip)
+}
+
+pub fn close_socket(local_port: u16) -> KernelResult<()> {
+    let mut table = UDP_SOCKETS.lock();
+    table.close(local_port)
+}
+
+pub fn deliver_to_socket(_src_ip: [u8; 4], src_port: u16, dst_port: u16, data: &[u8]) -> KernelResult<()> {
+    let mut table = UDP_SOCKETS.lock();
+    table.deliver_data(_src_ip, src_port, dst_port, data)
 }
 
 // ============================================================

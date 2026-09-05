@@ -330,10 +330,99 @@ impl TcpConnection {
 }
 
 // ============================================================
-// TCP 协议处理
+// TCP 连接表全局管理
 // ============================================================
 
-/// 发送 TCP 数据包
+use crate::sync::Spinlock;
+
+/// 全局 TCP 连接表
+static TCP_CONNECTIONS: Spinlock<TcpConnectionTable> = Spinlock::new(TcpConnectionTable::new());
+
+/// TCP 连接表结构
+pub struct TcpConnectionTable {
+    /// 连接列表（四元组 → 连接状态）
+    connections: alloc::vec::Vec<TcpConnection>,
+}
+
+impl TcpConnectionTable {
+    /// 创建空的连接表
+    pub const fn new() -> Self {
+        TcpConnectionTable {
+            connections: alloc::vec::Vec::new(),
+        }
+    }
+
+    /// 添加新连接
+    /// 为什么需要：管理所有活跃的 TCP 连接
+    pub fn add(&mut self, conn: TcpConnection) -> KernelResult<()> {
+        if self.connections.len() >= crate::net::config::TCP_CONNECTION_MAX {
+            return Err(KernelError::OutOfMemory);
+        }
+
+        // 检查是否已存在相同的四元组
+        if self.connections.iter().any(|c| c.tuple() == conn.tuple()) {
+            return Err(KernelError::InvalidArgument);  // 连接已存在
+        }
+
+        self.connections.push(conn);
+        Ok(())
+    }
+
+    /// 查找连接（按四元组）
+    pub fn find(&self, tuple: ([u8; 4], u16, [u8; 4], u16)) -> Option<&TcpConnection> {
+        self.connections.iter().find(|c| c.tuple() == tuple)
+    }
+
+    /// 查找连接（可变引用）
+    pub fn find_mut(&mut self, tuple: ([u8; 4], u16, [u8; 4], u16)) -> Option<&mut TcpConnection> {
+        self.connections.iter_mut().find(|c| c.tuple() == tuple)
+    }
+
+    /// 移除连接
+    pub fn remove(&mut self, tuple: ([u8; 4], u16, [u8; 4], u16)) -> KernelResult<()> {
+        let initial_len = self.connections.len();
+        self.connections.retain(|c| c.tuple() != tuple);
+
+        if self.connections.len() == initial_len {
+            Err(KernelError::NotFound)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// 获取连接数
+    pub fn len(&self) -> usize {
+        self.connections.len()
+    }
+}
+
+/// 全局连接表访问接口
+pub fn add_connection(conn: TcpConnection) -> KernelResult<()> {
+    let mut table = TCP_CONNECTIONS.lock();
+    table.add(conn)
+}
+
+pub fn find_connection(tuple: ([u8; 4], u16, [u8; 4], u16)) -> Option<TcpConnection> {
+    let table = TCP_CONNECTIONS.lock();
+    table.find(tuple).cloned()
+}
+
+pub fn update_connection<F>(tuple: ([u8; 4], u16, [u8; 4], u16), f: F) -> KernelResult<()>
+where
+    F: FnOnce(&mut TcpConnection) -> KernelResult<()>,
+{
+    let mut table = TCP_CONNECTIONS.lock();
+    if let Some(conn) = table.find_mut(tuple) {
+        f(conn)
+    } else {
+        Err(KernelError::NotFound)
+    }
+}
+
+pub fn remove_connection(tuple: ([u8; 4], u16, [u8; 4], u16)) -> KernelResult<()> {
+    let mut table = TCP_CONNECTIONS.lock();
+    table.remove(tuple)
+}
 /// 为什么分离发送：便于连接管理层调用
 pub fn send_packet(src_port: u16, dst_port: u16, data: &[u8]) -> KernelResult<usize> {
     // 创建 TCP 包头
@@ -341,10 +430,14 @@ pub fn send_packet(src_port: u16, dst_port: u16, data: &[u8]) -> KernelResult<us
     // 当前为简化版实现
     let _header = TcpHeader::new(src_port, dst_port, 0, tcp_flags::ACK);
 
+    // 构建完整 TCP 包
+    let mut packet = alloc::vec::Vec::with_capacity(20 + data.len());
+    packet.extend_from_slice(&_header.to_bytes());
+    packet.extend_from_slice(data);
+
     // TODO: 调用 IP 层发送（协议号 6 = TCP）
-    // TODO: 处理重传逻辑
     // 当前返回成功（占位符）
-    let _ = _header;
+    let _ = packet;
     Ok(data.len())
 }
 
@@ -353,11 +446,17 @@ pub fn send_packet(src_port: u16, dst_port: u16, data: &[u8]) -> KernelResult<us
 pub fn recv_packet(data: &[u8]) -> KernelResult<()> {
     let _header = TcpHeader::from_bytes(data)?;
 
+    // 获取包头信息
+    let _src_port = _header.src_port();
+    let _dst_port = _header.dst_port();
+    let _seq_num = _header.seq_num();
+    let _ack_num = _header.ack_num();
+
     // TODO: 查询连接表（使用四元组）
     // TODO: 根据连接状态和标志位处理（状态机）
-    // TODO: 处理数据或发送 ACK
+    // TODO: 如果有数据，存入连接的接收缓冲区
+    // TODO: 根据需要发送 ACK
 
-    let _ = _header;
     Ok(())
 }
 

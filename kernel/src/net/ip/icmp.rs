@@ -210,6 +210,58 @@ pub fn recv_icmp(
 ) -> KernelResult<()> {
     handle_icmp(src_ip, dst_ip, data)
 }
+/// 为什么需要：当 TTL 为 0 时，需要发送 Time Exceeded 通知给源地址
+pub fn create_time_exceeded(original_header: &[u8]) -> (IcmpHeader, alloc::vec::Vec<u8>) {
+    let mut header = IcmpHeader {
+        msg_type: IcmpType::TimeExceeded as u8,
+        code: 0,  // TTL 超时
+        checksum: [0, 0],
+        rest: [0; 4],
+    };
+
+    // 计算校验和
+    let mut packet = alloc::vec::Vec::new();
+    packet.extend_from_slice(&header.to_bytes());
+    // 原始包头（前 28 字节或更少）
+    let header_len = original_header.len().min(28);
+    packet.extend_from_slice(&original_header[..header_len]);
+
+    header.checksum = IcmpHeader::compute_checksum(&packet);
+
+    // 返回修正后的头和完整包
+    let mut result_packet = alloc::vec::Vec::new();
+    result_packet.extend_from_slice(&header.to_bytes());
+    result_packet.extend_from_slice(&original_header[..header_len]);
+
+    (header, result_packet)
+}
+
+/// 创建目标不可达错误通知
+pub fn create_destination_unreachable(
+    code: u8,
+    original_header: &[u8],
+) -> (IcmpHeader, alloc::vec::Vec<u8>) {
+    let mut header = IcmpHeader {
+        msg_type: IcmpType::DestinationUnreachable as u8,
+        code,
+        checksum: [0, 0],
+        rest: [0; 4],
+    };
+
+    // 构建响应包
+    let mut packet = alloc::vec::Vec::new();
+    packet.extend_from_slice(&header.to_bytes());
+    let header_len = original_header.len().min(28);
+    packet.extend_from_slice(&original_header[..header_len]);
+
+    header.checksum = IcmpHeader::compute_checksum(&packet);
+
+    let mut result_packet = alloc::vec::Vec::new();
+    result_packet.extend_from_slice(&header.to_bytes());
+    result_packet.extend_from_slice(&original_header[..header_len]);
+
+    (header, result_packet)
+}
 
 // ============================================================
 // ICMP 自测

@@ -84,7 +84,7 @@ pub struct RoutingTable {
 
 impl RoutingTable {
     /// 创建空的路由表
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         RoutingTable {
             entries: alloc::vec::Vec::new(),
         }
@@ -141,8 +141,67 @@ impl RoutingTable {
 }
 
 // ============================================================
-// 路由表自测
+// 全局路由表管理
 // ============================================================
+
+use crate::sync::Spinlock;
+
+/// 全局路由表
+static ROUTING_TABLE: Spinlock<RoutingTable> = Spinlock::new(RoutingTable::new());
+
+/// 初始化全局路由表
+/// 为什么需要初始化：系统启动时设置默认路由和本地网络路由
+pub fn init_routing_table() {
+    let mut table = ROUTING_TABLE.lock();
+
+    // 添加默认路由（0.0.0.0/0 → 网关）
+    // 为什么需要默认路由：当没有更具体的路由匹配时使用
+    let default_route = RouteEntry::new(
+        Ipv4Address::from_parts(0, 0, 0, 0),      // 目标前缀：0.0.0.0
+        0,                                         // 前缀长度：0（匹配所有）
+        Ipv4Address::from_parts(192, 168, 1, 1), // 网关
+        100,                                       // 指标
+        0,                                         // 接口 0
+    );
+    let _ = table.add_route(default_route);
+
+    // 添加本地网络路由（192.168.1.0/24 → 直连）
+    // 为什么需要本地网络路由：同网段地址可以直接发送，不需要网关
+    let local_route = RouteEntry::new(
+        Ipv4Address::from_parts(192, 168, 1, 0),
+        24,                                        // /24 子网
+        Ipv4Address::from_parts(0, 0, 0, 0),     // 网关为 0.0.0.0 表示直连
+        10,                                        // 指标（比默认路由优先）
+        0,                                         // 接口 0
+    );
+    let _ = table.add_route(local_route);
+
+    // 添加环回网络路由（127.0.0.0/8 → 本机）
+    let loopback_route = RouteEntry::new(
+        Ipv4Address::from_parts(127, 0, 0, 0),
+        8,                                         // /8 环回
+        Ipv4Address::from_parts(0, 0, 0, 0),     // 直连
+        1,                                         // 最优先
+        0,
+    );
+    let _ = table.add_route(loopback_route);
+}
+
+/// 全局路由表访问接口
+pub fn add_route(entry: RouteEntry) -> KernelResult<()> {
+    let mut table = ROUTING_TABLE.lock();
+    table.add_route(entry)
+}
+
+pub fn lookup_route(dest_ip: Ipv4Address) -> Option<RouteEntry> {
+    let table = ROUTING_TABLE.lock();
+    table.lookup(dest_ip).cloned()
+}
+
+pub fn remove_route(destination: Ipv4Address, prefix_len: u8) -> KernelResult<()> {
+    let mut table = ROUTING_TABLE.lock();
+    table.remove_route(destination, prefix_len)
+}
 
 pub fn selftest() -> bool {
     let mut table = RoutingTable::new();
