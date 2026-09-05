@@ -24,11 +24,11 @@
 // 4. 显示 / 输入 / 块 / 网卡：基于 PCI 与固定端口探测
 
 pub mod serial;
+pub mod acpi;
+pub mod pci;
+pub mod display;
 
 // 以下子模块随阶段 6 推进逐个接入：
-// pub mod acpi;
-// pub mod pci;
-// pub mod display;
 // pub mod input;
 // pub mod block;
 // pub mod nic;
@@ -43,8 +43,19 @@ pub fn init() {
     println!("[DRV] Initializing serial driver...");
     serial::init();
 
+    // 2. ACPI 表解析（PCI 与电源管理依赖）
+    println!("[DRV] Initializing ACPI...");
+    let _ = acpi::init();
+
+    // 3. PCI 枚举（各设备驱动依赖）
+    println!("[DRV] Enumerating PCI...");
+    let _ = pci::init();
+
+    // 4. 显示驱动
+    println!("[DRV] Initializing display...");
+    let _ = display::init();
+
     // 后续子系统初始化随模块接入逐个开启：
-    // acpi::init(); pci::init(); display::init();
     // input::init(); block::init(); nic::init();
 
     // 运行设备驱动自测
@@ -56,6 +67,9 @@ pub fn selftest() -> bool {
     println!("\n[DRV-SELFTEST] Device Drivers Selftest");
     let mut all = true;
     all &= t("serial 16550", serial::selftest());
+    all &= t("acpi tables", acpi::selftest());
+    all &= t("pci enumeration", pci::selftest());
+    all &= t("display framebuffer", display::selftest());
     // 后续子系统的自测由各自模块的 selftest 提供，随模块接入逐步开启
     println!("[DRV-SELFTEST] Result: {}", if all { "ALL PASS" } else { "FAILED" });
     all
