@@ -51,19 +51,12 @@ pub fn _print(args: fmt::Arguments) {
     }
 
     // 调试：镜像到 COM1（16550 UART），QEMU 下配合 -serial stdio 使用。
-    // 为什么用 in/out 指令而不是内存读：x86 上端口 I/O 只能通过
-    // IN/OUT 指令完成，对 0x3FD 的普通内存读并不等价（低位物理内
-    // 存已取消映射，会直接触发缺页）。fire-and-forget：QEMU 的 16550
-    // 发送保持寄存器几乎总是空闲，省去 LSR 轮询的开销。
+    // 为什么走 drivers::serial：早期 print.rs 内联 out 指令是临时调试
+    // 设施；阶段 6 已把串口收敛为正式驱动（drivers/serial/uart16550.rs），
+    // 这里改调驱动接口，避免端口访问重复实现。fire-and-forget：QEMU 的
+    // 16550 发送保持寄存器几乎总是空闲，轮询几乎不等待。
     for &b in &buf[..len] {
-        unsafe {
-            core::arch::asm!(
-                "out dx, al",
-                in("dx") 0x3F8u16,
-                in("al") if b == b'\n' { b'\r' } else { b },
-                options(nostack, preserves_flags)
-            );
-        }
+        crate::drivers::serial::console_write_byte(if b == b'\n' { b'\r' } else { b });
     }
 }
 

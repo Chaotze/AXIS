@@ -43,6 +43,10 @@ pub extern "C" fn _boot_rust() -> ! {
     println!("\n[INIT] Initializing file system...");
     axis_kernel::fs::init();
 
+    // 设备驱动初始化（串口、ACPI、PCI、显示、输入、块设备、网卡）
+    println!("\n[INIT] Initializing device drivers...");
+    axis_kernel::drivers::init();
+
     // 系统就绪
     println!("\n[INIT] System initialized successfully!");
     println!("[INIT] Kernel is now running...");

@@ -33,6 +33,9 @@ pub mod task;
 // 虚拟文件系统和文件系统实现
 pub mod fs;
 
+// 设备驱动层（串口、显示、输入、块设备、网卡、PCI、ACPI）
+pub mod drivers;
+
 // 库函数模块（打印、字符串、哈希、CRC、位操作、
 // 错误类型、时间、调试以及定长 collections 数据结构）
 //
