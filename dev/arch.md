@@ -279,6 +279,45 @@ AXIS/
 │       │       ├── parse.rs                    # ACPI 表解析器
 │       │       └── tables.rs                   # ACPI 数据表定义
 │       │
+│       │   ┌——— drivers 子系统实现说明（与设计的一致性修订）———┐
+│       │   │ 文件结构与原设计一致（serial/display/input/block/
+│       │   │ nic/pci/acpi）。按现实约束落地修订如下：
+│       │   │
+│       │   │ 1. 分层（同 mm/task）：纯算法模块（acpi/{parse,
+│       │   │    tables}、input/{hid,keyboard,mouse}、block/{blk_
+│       │   │    queue,io_scheduler}、display/fb、nic/mac、
+│       │   │    pci/{config,device,ecam} 等）不依赖 arch/全局锁，
+│       │   │    经 unitest 宿主测试；装配层（各 /mod.rs）承担
+│       │   │    全局状态、锁与 arch/MMIO 对接，由启动自测验证。
+│       │   │ 2. ACPI 必须「早期拷贝」：QEMU 把固件表放在 RAM
+│       │   │    顶部，而 PMM 的伙伴系统元数据也从被管理内存顶部
+│       │   │    划分——mm::init 一运行就覆盖这些表。main.rs 在
+│       │   │    arch::init 之后、mm::init 之前调用 acpi::init_early
+│       │   │    把表复制进静态缓存（无堆分配）；drivers 阶段再解析。
+│       │   │ 3. 串口收敛：15550 驱动成为 COM1 调试控制台的正式
+│       │   │    实现，lib/print.rs 的日志镜像改调驱动接口；
+│       │   │    arch/x86_64/io.rs 提供端口 I/O 原语供串口/PS2/PCI 使用。
+│       │   │ 4. 输入接线：IRQ1/IRQ12 在 I/O APIC 放开，handler
+│       │   │    路由到键盘/鼠标驱动；IRQ 路径用 try_lock 避免
+│       │   │    中断上下文死锁。
+│       │   │ 5. 块设备：RamDisk 是首个可用块设备（trait + 注册表
+│       │   │    + 读写回路自测全绿）；virtio-blk 完成现代 virtio-pci
+│       │   │    探测/特性协商/单虚拟队列/容量读取，读写通路已实现
+│       │   │    但暂缓注册（与内核堆/定时器环境的稳定性待排查，
+│       │   │    见 virtio.rs 说明）；NVMe/AHCI 交付寄存器层与端口探测。
+│       │   │ 6. 网卡：e1000 完成复位/EEPROM 读 MAC/收发控制器使能/
+│       │   │    链路检测（QEMU 默认网卡实测）；帧收发通路依赖网络
+│       │   │    栈阶段（7）的帧语义，igc/virtio-net 为探测骨架。
+│       │   │ 7. drivers::init 全程关中断（irqsave 纪律）：定时器 tick
+│       │   │    不再打断初始化/自测路径，QEMU 实测结果稳定；
+│       │   │    多核扩展时需按 per-CPU 层次细化。
+│       │   │ 8. 已知限制：当前工具链（nightly LTO）下，小结构体
+│       │   │    （如 MacAddr）经 trait 对象/Vec 转发返回值时偶发
+│       │   │    误读。驱动注册表以纯数据形态交付、避免在启动路径
+│       │   │    格式化该类值，语义由宿主单元测试覆盖；待工具链
+│       │   │    修复/替换后恢复 trait 对象封装。
+│       │   └———————————
+│       │
 │       ├── syscall/                            # 系统调用接口 (用户态进入内核)
 │       │   ├── mod.rs
 │       │   ├── dispatch.rs                     # 系统调用分发器 (路由到具体处理函数)
