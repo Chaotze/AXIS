@@ -21,17 +21,19 @@ use crate::lib::result::KernelResult;
 /// 调用方负责填充帧头后调用此函数
 /// 返回发送的字节数
 pub fn send_frame(frame: &[u8]) -> KernelResult<usize> {
-    // TODO: 调用 NIC 驱动发送帧
-    // 暂时返回成功（占位符）
-    Ok(frame.len())
+    // 通过驱动层发送帧到网络设备
+    // 为什么需要驱动层：
+    // - 不同 NIC 硬件的发送方式不同
+    // - 驱动层提供统一的 NetworkDevice trait 接口
+    // - 便于替换 NIC 驱动（虚拟 NIC → 真实硬件）
+    crate::drivers::nic::send_frame(frame)
 }
 
 /// 在链路层接收以太网帧
 /// 返回接收到的帧数据
 pub fn recv_frame() -> KernelResult<alloc::vec::Vec<u8>> {
-    // TODO: 从 NIC 驱动接收帧
-    // 暂时返回空向量（占位符）
-    Ok(alloc::vec::Vec::new())
+    // 通过驱动层从网络设备接收帧
+    crate::drivers::nic::recv_frame()
 }
 
 // ============================================================

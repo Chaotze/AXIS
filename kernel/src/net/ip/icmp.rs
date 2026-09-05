@@ -178,7 +178,7 @@ impl IcmpHeader {
 /// 处理接收到的 ICMP 包
 /// 为什么需要这个函数：IP层接收到ICMP协议的包后分发到此处理
 pub fn handle_icmp(
-    _src_ip: Ipv4Address,
+    src_ip: Ipv4Address,
     _dst_ip: Ipv4Address,
     data: &[u8],
 ) -> KernelResult<()> {
@@ -186,15 +186,63 @@ pub fn handle_icmp(
 
     match header.msg_type() {
         Some(IcmpType::EchoRequest) => {
-            // 处理 ping 请求：应该回复 echo reply
-            // TODO: 发送 ICMP 回显应答
+            // 处理 ping 请求：回复 echo reply
+            // 为什么需要回复：这是 ICMP echo 协议的要求
+            let reply_header = IcmpHeader::echo_reply(header.sequence(), header.id());
+
+            // 获取 ping 请求的数据（跳过 8 字节的 ICMP 头）
+            let payload = if data.len() > 8 {
+                &data[8..]
+            } else {
+                &[]
+            };
+
+            // 构建回复包（头 + 原始数据）
+            let mut reply_packet = alloc::vec::Vec::new();
+            reply_packet.extend_from_slice(&reply_header.to_bytes());
+            reply_packet.extend_from_slice(payload);
+
+            // 计算校验和
+            let mut header_with_payload = alloc::vec::Vec::new();
+            header_with_payload.extend_from_slice(&reply_header.to_bytes());
+            header_with_payload.extend_from_slice(payload);
+            let checksum = IcmpHeader::compute_checksum(&header_with_payload);
+
+            // 更新校验和到包中
+            if reply_packet.len() >= 2 {
+                reply_packet[2..4].copy_from_slice(&checksum);
+            }
+
+            // 发送 ICMP 回显应答
+            // 为什么交换源目地址：应答包需要发给请求者
+            let _ = super::ipv4::send_packet(
+                src_ip.as_bytes(),
+                crate::net::config::ip_protocol::ICMP,
+                &reply_packet,
+            );
         }
         Some(IcmpType::EchoReply) => {
             // 处理 ping 应答
-            // TODO: 通知应用层
+            // 为什么需要处理：应用层可能在等待 ping 回应
+            println!(
+                "[ICMP] Echo Reply from {}: id={}, seq={}, bytes={}",
+                src_ip,
+                header.id(),
+                header.sequence(),
+                data.len()
+            );
+            // 后续可扩展为通知应用层（通过事件队列或回调）
         }
-        _ => {
-            // 其他 ICMP 消息类型暂不处理
+        Some(IcmpType::TimeExceeded) => {
+            // 处理超时错误
+            println!("[ICMP] Time Exceeded from {}", src_ip);
+        }
+        Some(IcmpType::DestinationUnreachable) => {
+            // 处理目标不可达错误
+            println!("[ICMP] Destination Unreachable from {}", src_ip);
+        }
+        None => {
+            // 不支持的 ICMP 类型
         }
     }
 

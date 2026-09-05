@@ -214,6 +214,7 @@ pub fn send_packet(
 
     // 调用 IP 层发送
     // 协议号 17 = UDP
+    // 为什么传递给 IP 层：IP 层会使用本地地址填充包头的源 IP 字段
     let _ = super::super::ip::send_packet(
         &dst_ip,
         crate::net::config::ip_protocol::UDP,
@@ -227,7 +228,7 @@ pub fn send_packet(
 /// 为什么需要此函数：IP层识别协议号后分发给UDP处理
 /// 处理流程：解析包头 → 验证 → 查找套接字 → 存入缓冲区
 pub fn recv_packet(
-    _src_ip: [u8; 4],
+    src_ip: [u8; 4],
     _src_port: u16,
     dst_port: u16,
     data: &[u8],
@@ -253,13 +254,9 @@ pub fn recv_packet(
 
     let payload = &data[8..8 + payload_len];
 
-    // TODO: 查询本地 UDP 套接字表（SOCKET_TABLE）
-    // TODO: 将数据存入对应套接字的接收缓冲区
-    // TODO: 通知应用层有数据可读（设置事件标志）
-
-    // 当前简化实现：仅记录接收到的包信息
-    // 后续版本需要完整的套接字表管理
-    let _ = (_src_ip, _src_port, header, payload);
+    // 查询本地 UDP 套接字表并投递数据
+    // 为什么需要查询套接字表：确保有应用程序监听此端口
+    deliver_to_socket(src_ip, header.src_port(), dst_port, payload)?;
 
     Ok(())
 }

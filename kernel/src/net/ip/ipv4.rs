@@ -226,6 +226,16 @@ impl Ipv4Header {
 // IPv4 包处理
 // ============================================================
 
+/// 查询本机 IPv4 地址
+/// 为什么需要此函数：发送数据包时需要填充源 IP 地址
+/// 简化实现：直接返回配置的本机地址，后续可扩展为多网卡支持
+fn get_local_ipv4_address() -> Ipv4Address {
+    // 根据路由表中的本地路由获取本机地址
+    // 当前简化实现：返回默认本机地址 192.168.1.100
+    // 实际系统应该维护网卡配置表
+    Ipv4Address::from_parts(192, 168, 1, 100)
+}
+
 /// 发送 IPv4 包
 /// 关键处理路径：验证 → 路由查询 → 链路层发送
 pub fn send_packet(dest_ip: &[u8], protocol: u8, data: &[u8]) -> KernelResult<usize> {
@@ -237,8 +247,9 @@ pub fn send_packet(dest_ip: &[u8], protocol: u8, data: &[u8]) -> KernelResult<us
 
     // 1. 创建 IPv4 包头
     // 为什么需要包头：IP 层必须添加源地址、目标地址等信息
+    let src_addr = get_local_ipv4_address();
     let header = Ipv4Header::new(
-        Ipv4Address::from_parts(192, 168, 1, 1),  // TODO: 查询本机地址
+        src_addr,
         dest,
         protocol,
         data.len() as u16,
@@ -249,11 +260,16 @@ pub fn send_packet(dest_ip: &[u8], protocol: u8, data: &[u8]) -> KernelResult<us
     packet.extend_from_slice(&header.to_bytes());
     packet.extend_from_slice(data);
 
-    // 3. TODO: 查询路由表确定下一跳（网关或直连）
-    // 当前简化实现：直接调用链路层发送
-    // let route = routing_table.lookup(dest)?;
+    // 3. 查询路由表确定下一跳（网关或直连）
+    // 为什么需要路由查询：确保包能送到正确的网关或直连接口
+    let route = super::routing::lookup_route(dest);
+    if route.is_none() {
+        // 没有匹配的路由，返回不可达错误
+        return Err(KernelError::Other("No route to host"));
+    }
 
     // 4. 调用链路层发送
+    // 简化实现：直接发送到链路层，后续可扩展为 ARP 查询和多网卡支持
     let _ = super::super::link::send_frame(&packet)?;
 
     Ok(data.len())
@@ -276,7 +292,14 @@ pub fn recv_packet(data: &[u8]) -> KernelResult<()> {
     // 2. 检查 TTL（跳数限制）
     // 为什么需要检查：防止无限转发，确保数据包最终被丢弃
     if header.ttl() == 0 {
-        // TODO: 发送 ICMP 超时通知给源地址
+        // 发送 ICMP Time Exceeded 通知给源地址
+        // 为什么需要通知：源地址需要知道包被丢弃的原因
+        let (icmp_header, icmp_packet) = super::icmp::create_time_exceeded(&header.to_bytes());
+        let _ = icmp_header;  // 使用校验的包而不是头
+
+        // 向源地址发送 ICMP 错误报告
+        // 简化实现：忽略发送失败，继续处理其他包
+        let _ = send_packet(header.src_ip().as_bytes(), crate::net::config::ip_protocol::ICMP, &icmp_packet);
         return Err(KernelError::Other("TTL expired"));
     }
 

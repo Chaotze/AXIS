@@ -23,6 +23,7 @@
 
 pub mod types;
 pub mod config;
+pub mod interface;
 pub mod link;
 pub mod ip;
 pub mod transport;
@@ -32,6 +33,7 @@ pub mod io_uring;
 
 // 重新导出常用类型
 pub use types::{MacAddress, Ipv4Address, Ipv6Address};
+pub use interface::NetworkInterface;
 
 use crate::sync::Spinlock;
 
@@ -68,10 +70,17 @@ pub fn init() {
     println!("[NET] Network subsystem initializing...");
 
     // 禁用中断，避免中断路径与初始化路径死锁
-    // 为什么需要 irqsave：
-    // - 如果中断在持有 NET_STATE 锁期间触发，中断路径试图获取同一把锁 → 死锁
-    // - irqsave 保证初始化期间中断不会触发
     let flags = crate::arch::x86_64::cpu::irq_save();
+
+    // 初始化网络驱动（虚拟 NIC）
+    if let Err(e) = crate::drivers::nic::init_network_device() {
+        println!("[NET] Warning: Failed to initialize network device: {:?}", e);
+    }
+
+    // 初始化网络接口配置
+    if let Err(e) = interface::init_interfaces() {
+        println!("[NET] Warning: Failed to initialize network interfaces: {:?}", e);
+    }
 
     // 初始化全局网络状态
     let mut guard = NET_STATE.lock();
@@ -86,7 +95,6 @@ pub fn init() {
     drop(guard);
 
     // 初始化路由表
-    // 为什么需要在这里初始化：系统启动时设置默认路由
     ip::routing::init_routing_table();
 
     // 恢复中断

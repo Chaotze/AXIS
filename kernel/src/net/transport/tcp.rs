@@ -593,6 +593,14 @@ impl TcpConnectionTable {
         }
     }
 
+    /// 按端口对查找连接（遍历所有连接）
+    pub fn find_by_ports(&self, src_port: u16, dst_port: u16) -> Option<TcpConnection> {
+        self.connections
+            .iter()
+            .find(|c| c.src_port == src_port && c.dst_port == dst_port)
+            .cloned()
+    }
+
     /// 获取连接数
     pub fn len(&self) -> usize {
         self.connections.len()
@@ -627,38 +635,147 @@ pub fn remove_connection(tuple: ([u8; 4], u16, [u8; 4], u16)) -> KernelResult<()
     table.remove(tuple)
 }
 /// 为什么分离发送：便于连接管理层调用
-pub fn send_packet(src_port: u16, dst_port: u16, data: &[u8]) -> KernelResult<usize> {
-    // 创建 TCP 包头
-    // TODO: 从连接表查询对应连接的状态和序列号
-    // 当前为简化版实现
-    let _header = TcpHeader::new(src_port, dst_port, 0, tcp_flags::ACK);
+pub fn send_packet(
+    src_port: u16,
+    dst_port: u16,
+    data: &[u8],
+) -> KernelResult<usize> {
+    // 从连接表查找真实的目标 IP
+    // 为什么需要：send_packet 只有端口信息，需要从连接表获取完整四元组
+    let found_conn = {
+        let conns = TCP_CONNECTIONS.lock();
+        conns.find_by_ports(src_port, dst_port)
+    };
 
-    // 构建完整 TCP 包
-    let mut packet = alloc::vec::Vec::with_capacity(20 + data.len());
-    packet.extend_from_slice(&_header.to_bytes());
-    packet.extend_from_slice(data);
+    if let Some(conn) = found_conn {
+        // 创建 TCP 包头
+        let mut header = TcpHeader::new(src_port, dst_port, conn.snd_seq, tcp_flags::ACK);
+        header.ack_num = conn.rcv_seq.to_be_bytes();
+        header.window = (conn.rcv_wnd as u16).to_be_bytes();
 
-    // TODO: 调用 IP 层发送（协议号 6 = TCP）
-    // 当前返回成功（占位符）
-    let _ = packet;
-    Ok(data.len())
+        // 构建完整 TCP 包
+        let mut packet = alloc::vec::Vec::with_capacity(20 + data.len());
+        packet.extend_from_slice(&header.to_bytes());
+        packet.extend_from_slice(data);
+
+        // 调用 IP 层发送（使用连接中的真实目标 IP）
+        let _ = super::super::ip::send_packet(
+            &conn.dst_ip,
+            crate::net::config::ip_protocol::TCP,
+            &packet,
+        )?;
+
+        Ok(data.len())
+    } else {
+        Err(KernelError::NotFound)
+    }
 }
 
 /// 接收 TCP 数据包
 /// 为什么需要此函数：IP 层识别协议号后分发给 TCP 处理
+///
+/// 注意：在完整实现中，此函数应该从 IP 层接收源和目标 IP 地址
+/// 为什么：TCP 四元组 = (src_ip, src_port, dst_ip, dst_port)
 pub fn recv_packet(data: &[u8]) -> KernelResult<()> {
-    let _header = TcpHeader::from_bytes(data)?;
+    let header = TcpHeader::from_bytes(data)?;
 
     // 获取包头信息
-    let _src_port = _header.src_port();
-    let _dst_port = _header.dst_port();
-    let _seq_num = _header.seq_num();
-    let _ack_num = _header.ack_num();
+    let src_port = header.src_port();
+    let dst_port = header.dst_port();
+    let seq_num = header.seq_num();
+    let ack_num = header.ack_num();
 
-    // TODO: 查询连接表（使用四元组）
-    // TODO: 根据连接状态和标志位处理（状态机）
-    // TODO: 如果有数据，存入连接的接收缓冲区
-    // TODO: 根据需要发送 ACK
+    // TODO: 改进方案
+    // 应该从 IP 层获取源和目标 IP 地址
+    // 当前为简化实现，使用默认本机地址
+    let src_ip = [0, 0, 0, 0];  // 应该从 IP 层获取
+    let dst_ip = [0, 0, 0, 0];  // 应该从 IP 层获取
+
+    let tuple = (src_ip, src_port, dst_ip, dst_port);
+
+    // 查询连接表（使用四元组）
+    // 为什么需要查询：找到对应的连接状态
+    if let Some(_conn) = find_connection(tuple) {
+        // 获取有效负载（跳过 TCP 头）
+        let payload_start = header.header_length();
+        let payload = if data.len() > payload_start {
+            &data[payload_start..]
+        } else {
+            &[]
+        };
+
+        // 根据连接状态和标志位处理（状态机）
+        // 为什么需要状态机：TCP 连接有多个状态，不同状态下处理包的方式不同
+        update_connection(tuple, |conn| {
+            match conn.state {
+                crate::net::config::TcpState::Listen => {
+                    // 监听状态：应该收到 SYN
+                    if header.has_syn() {
+                        // 处理客户端的 SYN
+                        conn.handle_syn(seq_num)?;
+
+                        // 转换到 SYN_RCVD 状态，准备发送 SYN+ACK
+                    }
+                    Ok(())
+                }
+                crate::net::config::TcpState::SynSent => {
+                    // SYN_SENT 状态：应该收到 SYN+ACK
+                    if header.has_syn() && header.has_ack() {
+                        conn.handle_synack(ack_num, seq_num)?;
+                        // 转换到 ESTABLISHED 状态
+                    }
+                    Ok(())
+                }
+                crate::net::config::TcpState::SynRecvd => {
+                    // SYN_RCVD 状态：应该收到 ACK
+                    if header.has_ack() {
+                        conn.handle_ack(ack_num)?;
+                        // 转换到 ESTABLISHED 状态
+                    }
+                    Ok(())
+                }
+                crate::net::config::TcpState::Established => {
+                    // ESTABLISHED 状态：可以接收数据或 FIN
+                    if payload.len() > 0 {
+                        // 存储接收到的数据
+                        // 为什么需要存储：应用层稍后会读取此数据
+                        conn.store_received_data(payload);
+                    }
+
+                    if header.has_fin() {
+                        // 处理对方的 FIN
+                        conn.handle_fin()?;
+                        // 转换到 CLOSE_WAIT 状态
+                    }
+
+                    // 如果收到数据，需要发送 ACK
+                    if payload.len() > 0 || header.has_fin() {
+                        conn.rcv_seq = conn.rcv_seq.wrapping_add(payload.len() as u32);
+                        // 后续可以通知应用层有新数据
+                    }
+                    Ok(())
+                }
+                crate::net::config::TcpState::FinWait1 | crate::net::config::TcpState::FinWait2 => {
+                    // 关闭相关状态：处理对方的 FIN 或 ACK
+                    if header.has_fin() {
+                        conn.handle_fin()?;
+                    }
+                    if header.has_ack() {
+                        conn.last_acked_seq = ack_num;
+                    }
+                    Ok(())
+                }
+                _ => {
+                    // 其他状态的处理
+                    Ok(())
+                }
+            }
+        })?;
+    } else {
+        // 没有找到对应的连接
+        // 可能需要发送 RST（重置）包来告知对方
+        // 当前简化实现：忽略此包
+    }
 
     Ok(())
 }
