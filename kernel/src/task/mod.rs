@@ -99,11 +99,6 @@ pub fn init() {
     println!("[TASK] task subsystem ready ({} slots)", MAX_TASKS);
     selftest();
 
-    // 开调度：init 与 3 个演示任务进入就绪队列；
-    // 此后主循环成为 idle 任务，由定时器中断驱动切换
-    start_scheduling();
-    println!("[TASK] scheduling started (4 kernel threads, CFS preemption)");
-
     // 初始化完成：恢复中断，首个 tick 开始真实抢占切换
     unsafe {
         crate::arch::x86_64::cpu::irq_restore(flags);
@@ -115,7 +110,7 @@ pub fn init() {
 /// 为什么单独成步：
 /// - 自测（selftest）在调度开启前同步运行，输出不被并发
 ///   任务穿插；本函数返回后，首次 tick 即开始抢占切换
-fn start_scheduling() {
+pub fn start_scheduling() {
     let mut guard = TASK.lock();
     let Some(state) = guard.as_mut() else { return };
 
@@ -429,7 +424,7 @@ extern "C" fn init_task(_arg: u64) -> ! {
         if round % 1_000_000_000 == 0 {
             let s = stats();
             println!(
-                "[INITTASK] ticks={} switches={} runq={}",
+                "[INIT] ticks={} switches={} runq={}",
                 s.simulated_ticks, s.context_switches, s.runqueue_len
             );
         }
@@ -449,7 +444,7 @@ extern "C" fn demo_task(arg: u64) -> ! {
     loop {
         round += 1;
         if round % 1_000_000_000 == 0 {
-            println!("  [DEMOTASK {}] round=1G", id);
+            println!("  [TASK {}] round=1G", id);
         }
     }
 }

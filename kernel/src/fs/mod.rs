@@ -85,6 +85,59 @@ pub fn init() {
 // VFS 公开接口
 // ============================================================
 
+/// 挂载的文件系统信息（用于 procfs 等子系统读取）
+///
+/// 为什么设计这个结构：
+/// - procfs /proc/filesystems 需要显示已挂载的文件系统列表
+/// - 不暴露内部 Arc<dyn FileSystem>，只暴露必要的元数据
+#[derive(Debug, Clone)]
+pub struct MountedFilesystemInfo {
+    /// 文件系统名称（如 "tmpfs"、"procfs" 等）
+    pub fs_name: [u8; 32],
+    pub fs_name_len: usize,
+    /// 挂载标志（只读等）
+    pub flags: MountFlags,
+    /// 是否为虚拟文件系统（不需要块设备）
+    pub is_virtual: bool,
+}
+
+/// 获取所有已挂载的文件系统列表
+///
+/// 用途：procfs /proc/filesystems 需要列出当前系统支持的所有文件系统
+/// 为什么提供这个接口：
+/// - procfs 不直接访问全局 VFS 状态
+/// - 集中权限管理（锁保护在这里）
+/// - 返回的是文件系统元数据而非 trait object
+pub fn list_mounted_filesystems() -> alloc::vec::Vec<MountedFilesystemInfo> {
+    let guard = VFS_STATE.lock();
+    let mut filesystems = alloc::vec::Vec::new();
+
+    if let Some(state) = guard.as_ref() {
+        for entry in state.mount_table.entries() {
+            // 获取文件系统名称
+            let fs_name_str = entry.filesystem.name();
+            let fs_name_bytes = fs_name_str.as_bytes();
+
+            let mut fs_name = [0u8; 32];
+            let copy_len = core::cmp::min(fs_name_bytes.len(), 31);
+            fs_name[..copy_len].copy_from_slice(&fs_name_bytes[..copy_len]);
+
+            // 为什么判断虚拟文件系统：/proc/filesystems 格式为 "nodev\tfs_name" 或 "\tfs_name"
+            // 所有当前实现的都是虚拟文件系统（无块设备）
+            let is_virtual = true;
+
+            filesystems.push(MountedFilesystemInfo {
+                fs_name,
+                fs_name_len: copy_len,
+                flags: entry.flags,
+                is_virtual,
+            });
+        }
+    }
+
+    filesystems
+}
+
 /// 获取 dentry 缓存统计
 pub fn get_dentry_cache_stats() -> Option<dcache::DentryCacheStats> {
     let guard = VFS_STATE.lock();

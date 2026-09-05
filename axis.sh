@@ -95,7 +95,7 @@ build() {
     info "Creating disk image..."
 
     # 创建磁盘镜像（0.5MB，1024 扇区）
-    IMG_PATH="target/axis-0.1.3-bios-x86_64.img"
+    IMG_PATH="target/axis-0.1.4-bios-x86_64.img"
     dd if=/dev/zero of="$IMG_PATH" bs=1024 count=512 2>/dev/null
     info "Image file created: $IMG_PATH"
 
@@ -127,7 +127,7 @@ run() {
     qemu_args=(
         qemu-system-x86_64
         -cpu max
-        -drive format=raw,file=target/axis-0.1.3-bios-x86_64.img
+        -drive format=raw,file=target/axis-0.1.4-bios-x86_64.img
         -display curses
         -m 128M -no-reboot -no-shutdown
     )
@@ -137,7 +137,7 @@ run() {
         @ launch
         --type=tab
         --cwd=current
-        --title="axis-0.1.3-bios-x86_64"
+        --title="axis-0.1.4-bios-x86_64"
         -- bash -c "$qemu_cmd; exec bash"
     )
     kitty "${kitty_args[@]}"

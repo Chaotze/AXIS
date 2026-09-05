@@ -359,17 +359,48 @@ impl ProcContentGenerator {
 
     /// 生成 /proc/filesystems
     ///
-    /// 列出当前编译进内核的所有支持的文件系统
+    /// 列出当前系统已挂载的所有文件系统。
+    /// 格式: [nodev] filesystem_name
+    /// - "nodev" 表示虚拟文件系统（不需要块设备）
+    /// - 无 "nodev" 表示块设备文件系统
+    ///
+    /// 为什么从 VFS 读取而不硬编码：
+    /// - 真实反映系统当前挂载的文件系统
+    /// - 支持动态注册文件系统（future）
+    /// - procfs 不需要知道有哪些文件系统
     fn generate_filesystems() -> Vec<u8> {
-        // TODO: 从 VFS 获取已注册的文件系统列表
         let mut content = String::new();
-        // 虚拟文件系统（无需块设备）
-        content.push_str("nodev\tdevfs\n");
-        content.push_str("nodev\tprocfs\n");
-        content.push_str("nodev\tsysfs\n");
-        content.push_str("nodev\ttmpfs\n");
-        // 块设备文件系统
-        content.push_str("\texfat\n");
+
+        // 从 VFS 获取所有已挂载的文件系统
+        let filesystems = crate::fs::list_mounted_filesystems();
+
+        // 构建 /proc/filesystems 格式
+        // Linux 格式：先列虚拟 fs，再列块设备 fs
+        for fs_info in filesystems.iter() {
+            if fs_info.is_virtual {
+                content.push_str("nodev\t");
+            }
+
+            // 文件系统名称
+            if fs_info.fs_name_len > 0 {
+                if let Ok(name) = core::str::from_utf8(&fs_info.fs_name[..fs_info.fs_name_len]) {
+                    content.push_str(name);
+                }
+            }
+            content.push_str("\n");
+        }
+
+        // 如果挂载表为空，提供默认列表（系统启动初期可能还没挂载任何 fs）
+        if filesystems.is_empty() {
+            // 为什么提供默认列表：避免 /proc/filesystems 为空
+            // 这些是系统编译进的所有可用文件系统
+            content.push_str("nodev\tdevfs\n");
+            content.push_str("nodev\tprocfs\n");
+            content.push_str("nodev\tsysfs\n");
+            content.push_str("nodev\ttmpfs\n");
+            content.push_str("\texfat\n");
+        }
+
         content.into_bytes()
     }
 
