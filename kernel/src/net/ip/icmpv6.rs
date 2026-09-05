@@ -4,8 +4,6 @@
 // RFC 4443 ICMPv6 实现，暂为基础框架
 // 包括邻居发现、路由器广告等功能
 
-use crate::lib::result::KernelResult;
-
 /// ICMPv6 自测
 pub fn selftest() -> bool {
     true

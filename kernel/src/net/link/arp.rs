@@ -23,7 +23,6 @@ use crate::lib::result::KernelResult;
 use crate::prelude::KernelError;
 use super::ethernet::{EthernetFrame, EthernetHeader};
 use super::super::types::{MacAddress, Ipv4Address};
-use alloc::vec::Vec;
 
 /// ARP 操作码
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,7 +195,7 @@ pub fn create_request(
     target_ip: Ipv4Address,
 ) -> EthernetFrame {
     // ARP 请求的目标 MAC 为全零（或广播）
-    let target_mac = MacAddress::broadcast();
+    let _target_mac = MacAddress::broadcast();
 
     let arp_header = ArpHeader::new(
         ArpOp::Request,

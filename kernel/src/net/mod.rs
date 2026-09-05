@@ -33,7 +33,6 @@ pub mod io_uring;
 // 重新导出常用类型
 pub use types::{MacAddress, Ipv4Address, Ipv6Address};
 
-use crate::prelude::KernelResult;
 use crate::sync::Spinlock;
 
 // ============================================================
@@ -68,6 +67,12 @@ static NET_STATE: Spinlock<Option<alloc::boxed::Box<NetworkState>>> = Spinlock::
 pub fn init() {
     println!("[NET] Network subsystem initializing...");
 
+    // 禁用中断，避免中断路径与初始化路径死锁
+    // 为什么需要 irqsave：
+    // - 如果中断在持有 NET_STATE 锁期间触发，中断路径试图获取同一把锁 → 死锁
+    // - irqsave 保证初始化期间中断不会触发
+    let flags = crate::arch::x86_64::cpu::irq_save();
+
     // 初始化全局网络状态
     let mut guard = NET_STATE.lock();
     let state = alloc::boxed::Box::new(NetworkState {
@@ -80,9 +85,13 @@ pub fn init() {
     *guard = Some(state);
     drop(guard);
 
+    // 恢复中断
+    unsafe { crate::arch::x86_64::cpu::irq_restore(flags); }
+
     println!("[NET] Network subsystem ready");
 
     // 网络栈自测
+    println!("[NET] Running network stack selftest...");
     selftest();
 }
 

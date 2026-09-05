@@ -7,12 +7,11 @@
 pub mod ethernet;
 pub mod arp;
 
-use crate::lib::result::KernelResult;
-use crate::prelude::KernelError;
-
 // 重新导出常用类型
 pub use ethernet::EthernetFrame;
 pub use super::types::MacAddress;
+
+use crate::lib::result::KernelResult;
 
 // ============================================================
 // 链路层公开接口

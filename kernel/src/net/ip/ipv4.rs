@@ -16,7 +16,6 @@
 use crate::lib::result::KernelResult;
 use crate::prelude::KernelError;
 use super::super::types::Ipv4Address;
-use alloc::vec::Vec;
 
 // ============================================================
 // IPv4 包头结构
