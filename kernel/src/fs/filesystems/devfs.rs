@@ -3,6 +3,12 @@
 // ============================================================
 // 提供对虚拟设备的访问（/dev/null、/dev/zero 等）
 // 大多数文件都是字符设备或块设备
+//
+// 架构特性：
+// - 字符设备：/dev/null、/dev/zero、/dev/random 等
+// - 块设备：/dev/sda、/dev/sdb 等（待集成块设备驱动层）
+// - 设备文件是虚拟的，通过 devfs 管理设备树
+// - 支持动态添加设备
 
 #![allow(dead_code)]
 
@@ -11,33 +17,45 @@ use crate::fs::vfs::{
     InodeMetadata, InodeNumber
 };
 use crate::lib::result::KernelResult;
+use crate::lib::time::current_timestamp_secs;
+use alloc::vec;
 use alloc::vec::Vec;
 
 // ============================================================
-// devfs 设备节点类型
+// 设备类型定义
 // ============================================================
 
-/// 设备类型
+/// 字符设备类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeviceType {
-    /// /dev/null - 黑洞设备
-    Null,
-    /// /dev/zero - 全零设备
-    Zero,
-    /// /dev/full - 写满设备
-    Full,
-    /// /dev/random - 随机数设备
-    Random,
+pub enum CharDeviceType {
+    Null,       // /dev/null - 黑洞设备
+    Zero,       // /dev/zero - 全零设备
+    Full,       // /dev/full - 写满设备
+    Random,     // /dev/random - 随机数设备
+}
+
+/// 块设备类型
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockDeviceType {
+    SDA,        // /dev/sda - 第一块硬盘
+    SDB,        // /dev/sdb - 第二块硬盘
+    // 未来支持更多块设备
+}
+
+/// devfs 节点类型
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DevfsNodeKind {
+    Root,
+    CharDevice(CharDeviceType),
+    BlockDevice(BlockDeviceType),
 }
 
 /// devfs 中的设备节点
 pub struct DevfsNode {
     /// inode 号
     inode_number: InodeNumber,
-    /// 文件类型
-    file_type: FileType,
-    /// 设备类型（如果是设备）
-    device_type: Option<DeviceType>,
+    /// 节点类型
+    kind: DevfsNodeKind,
     /// 是目录时的子项
     children: Vec<(Vec<u8>, InodeNumber)>,
     /// 元数据
@@ -45,13 +63,12 @@ pub struct DevfsNode {
 }
 
 impl DevfsNode {
-    /// 创建目录节点
-    fn new_dir(inode_number: InodeNumber) -> Self {
-        let now = 0i64;
+    /// 创建根目录节点
+    fn new_root(inode_number: InodeNumber) -> Self {
+        let now = current_timestamp_secs();
         DevfsNode {
             inode_number,
-            file_type: FileType::CharDevice,
-            device_type: None,
+            kind: DevfsNodeKind::Root,
             children: Vec::new(),
             metadata: InodeMetadata {
                 inode_number,
@@ -70,13 +87,12 @@ impl DevfsNode {
         }
     }
 
-    /// 创建设备节点
-    fn new_device(inode_number: InodeNumber, device_type: DeviceType) -> Self {
-        let now = 0i64;
+    /// 创建字符设备节点
+    fn new_char_device(inode_number: InodeNumber, device_type: CharDeviceType) -> Self {
+        let now = current_timestamp_secs();
         DevfsNode {
             inode_number,
-            file_type: FileType::CharDevice,
-            device_type: Some(device_type),
+            kind: DevfsNodeKind::CharDevice(device_type),
             children: Vec::new(),
             metadata: InodeMetadata {
                 inode_number,
@@ -95,8 +111,32 @@ impl DevfsNode {
         }
     }
 
+    /// 创建块设备节点
+    fn new_block_device(inode_number: InodeNumber, device_type: BlockDeviceType) -> Self {
+        let now = current_timestamp_secs();
+        DevfsNode {
+            inode_number,
+            kind: DevfsNodeKind::BlockDevice(device_type),
+            children: Vec::new(),
+            metadata: InodeMetadata {
+                inode_number,
+                file_type: FileType::BlockDevice,
+                size: 0,
+                blocks: 0,
+                mode: FileMode::new(0o660),
+                uid: 0,
+                gid: 0,
+                nlink: 1,
+                atime: now,
+                mtime: now,
+                ctime: now,
+                btime: Some(now),
+            },
+        }
+    }
+
     fn is_dir(&self) -> bool {
-        self.metadata.file_type == FileType::Directory
+        matches!(self.kind, DevfsNodeKind::Root)
     }
 }
 
@@ -125,27 +165,40 @@ impl Devfs {
         devfs.nodes.push(None);
 
         // 创建根目录（inode 2）
-        devfs.nodes.push(Some(DevfsNode::new_dir(2)));
+        devfs.nodes.push(Some(DevfsNode::new_root(2)));
 
-        // 创建标准设备
-        // inode 3: /dev/null
-        devfs.nodes.push(Some(DevfsNode::new_device(3, DeviceType::Null)));
-        // inode 4: /dev/zero
-        devfs.nodes.push(Some(DevfsNode::new_device(4, DeviceType::Zero)));
-        // inode 5: /dev/full
-        devfs.nodes.push(Some(DevfsNode::new_device(5, DeviceType::Full)));
-        // inode 6: /dev/random
-        devfs.nodes.push(Some(DevfsNode::new_device(6, DeviceType::Random)));
+        // 创建标准字符设备
+        let char_devices = vec![
+            (b"null".to_vec(), CharDeviceType::Null, 3),
+            (b"zero".to_vec(), CharDeviceType::Zero, 4),
+            (b"full".to_vec(), CharDeviceType::Full, 5),
+            (b"random".to_vec(), CharDeviceType::Random, 6),
+        ];
+
+        for (name, dev_type, ino) in char_devices {
+            devfs.nodes.push(Some(DevfsNode::new_char_device(ino, dev_type)));
+            if let Some(root) = devfs.nodes.get_mut(2).and_then(|n| n.as_mut()) {
+                root.children.push((name, ino));
+            }
+        }
 
         devfs.next_ino = 7;
 
-        // 在根目录中添加设备项
-        if let Some(root) = devfs.nodes.get_mut(2).and_then(|n| n.as_mut()) {
-            root.children.push((b"null".to_vec(), 3));
-            root.children.push((b"zero".to_vec(), 4));
-            root.children.push((b"full".to_vec(), 5));
-            root.children.push((b"random".to_vec(), 6));
+        // 创建块设备节点（演示用途，实际驱动还未就绪）
+        // /dev/sda 和 /dev/sdb
+        let block_devices = vec![
+            (b"sda".to_vec(), BlockDeviceType::SDA, 7),
+            (b"sdb".to_vec(), BlockDeviceType::SDB, 8),
+        ];
+
+        for (name, dev_type, ino) in block_devices {
+            devfs.nodes.push(Some(DevfsNode::new_block_device(ino, dev_type)));
+            if let Some(root) = devfs.nodes.get_mut(2).and_then(|n| n.as_mut()) {
+                root.children.push((name, ino));
+            }
         }
+
+        devfs.next_ino = 9;
 
         Ok(devfs)
     }
@@ -206,33 +259,45 @@ impl FileSystem for Devfs {
             .ok_or(crate::lib::result::KernelError::InvalidArgument)?;
 
         // 为什么检查设备类型：只有设备节点可以读
-        let device_type = node.device_type
-            .ok_or(crate::lib::result::KernelError::InvalidArgument)?;
-
-        match device_type {
-            DeviceType::Null => {
-                // /dev/null 总是返回 EOF
-                Ok(0)
-            }
-            DeviceType::Zero => {
-                // /dev/zero 返回全零
-                for b in buf.iter_mut() {
-                    *b = 0;
+        match node.kind {
+            DevfsNodeKind::CharDevice(dev_type) => {
+                // 字符设备读操作
+                match dev_type {
+                    CharDeviceType::Null => {
+                        // /dev/null 总是返回 EOF
+                        Ok(0)
+                    }
+                    CharDeviceType::Zero => {
+                        // /dev/zero 返回全零
+                        for b in buf.iter_mut() {
+                            *b = 0;
+                        }
+                        Ok(buf.len())
+                    }
+                    CharDeviceType::Full => {
+                        // /dev/full 返回错误（设备满）
+                        Err(crate::lib::result::KernelError::InvalidArgument)
+                    }
+                    CharDeviceType::Random => {
+                        // /dev/random 返回伪随机数
+                        let mut seed = offset as u32;
+                        for b in buf.iter_mut() {
+                            seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
+                            *b = (seed >> 16) as u8;
+                        }
+                        Ok(buf.len())
+                    }
                 }
-                Ok(buf.len())
             }
-            DeviceType::Full => {
-                // /dev/full 返回错误（设备满）
+            DevfsNodeKind::BlockDevice(_dev_type) => {
+                // 块设备读操作
+                // TODO: 集成块设备驱动层后实现真实的块 I/O
+                // 目前返回错误（驱动未就绪）
                 Err(crate::lib::result::KernelError::InvalidArgument)
             }
-            DeviceType::Random => {
-                // /dev/random 返回伪随机数（简化实现）
-                let mut seed = offset as u32;
-                for b in buf.iter_mut() {
-                    seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
-                    *b = (seed >> 16) as u8;
-                }
-                Ok(buf.len())
+            DevfsNodeKind::Root => {
+                // 目录不可读
+                Err(crate::lib::result::KernelError::InvalidArgument)
             }
         }
     }
@@ -241,24 +306,33 @@ impl FileSystem for Devfs {
         let node = self.get_node(ino)
             .ok_or(crate::lib::result::KernelError::InvalidArgument)?;
 
-        let device_type = node.device_type
-            .ok_or(crate::lib::result::KernelError::InvalidArgument)?;
-
-        match device_type {
-            DeviceType::Null => {
-                // /dev/null 丢弃所有数据
-                Ok(data.len())
+        match node.kind {
+            DevfsNodeKind::CharDevice(dev_type) => {
+                match dev_type {
+                    CharDeviceType::Null => {
+                        // /dev/null 丢弃所有数据
+                        Ok(data.len())
+                    }
+                    CharDeviceType::Zero => {
+                        // /dev/zero 不支持写
+                        Err(crate::lib::result::KernelError::InvalidArgument)
+                    }
+                    CharDeviceType::Full => {
+                        // /dev/full 设备满，拒绝写
+                        Err(crate::lib::result::KernelError::InvalidArgument)
+                    }
+                    CharDeviceType::Random => {
+                        // /dev/random 不支持写
+                        Err(crate::lib::result::KernelError::InvalidArgument)
+                    }
+                }
             }
-            DeviceType::Zero => {
-                // /dev/zero 不支持写
+            DevfsNodeKind::BlockDevice(_dev_type) => {
+                // 块设备写操作
+                // TODO: 集成块设备驱动层后实现真实的块 I/O
                 Err(crate::lib::result::KernelError::InvalidArgument)
             }
-            DeviceType::Full => {
-                // /dev/full 设备满，拒绝写
-                Err(crate::lib::result::KernelError::InvalidArgument)
-            }
-            DeviceType::Random => {
-                // /dev/random 不支持写
+            DevfsNodeKind::Root => {
                 Err(crate::lib::result::KernelError::InvalidArgument)
             }
         }
@@ -345,8 +419,8 @@ mod tests {
     fn test_devfs_readdir() {
         let devfs = Devfs::new().unwrap();
         let entries = devfs.readdir(2).unwrap();
-        // 应该有 . .. null zero full random
-        assert!(entries.len() >= 4);
+        // 应该有 . .. 加上各类设备
+        assert!(entries.len() >= 6);
     }
 
     #[test]
@@ -372,4 +446,18 @@ mod tests {
             assert_eq!(*b, 0);
         }
     }
+
+    #[test]
+    fn test_devfs_block_devices_present() {
+        let devfs = Devfs::new().unwrap();
+        let entries = devfs.readdir(2).unwrap();
+        // 查找 sda 和 sdb
+        let has_sda = entries.iter().any(|e| e.name == b"sda".to_vec());
+        let has_sdb = entries.iter().any(|e| e.name == b"sdb".to_vec());
+        assert!(has_sda && has_sdb);
+    }
 }
+
+
+// ============================================================
+// 单元测试

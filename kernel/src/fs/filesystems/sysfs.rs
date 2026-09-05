@@ -34,7 +34,7 @@ pub struct SysfsNode {
 impl SysfsNode {
     /// 创建目录节点
     fn new_dir(inode_number: InodeNumber) -> Self {
-        let now = 0i64;
+        let now = crate::lib::time::current_timestamp_secs();
         SysfsNode {
             inode_number,
             file_type: FileType::Directory,
@@ -59,7 +59,7 @@ impl SysfsNode {
 
     /// 创建虚拟文件节点
     fn new_virtual_file(inode_number: InodeNumber) -> Self {
-        let now = 0i64;
+        let now = crate::lib::time::current_timestamp_secs();
         SysfsNode {
             inode_number,
             file_type: FileType::File,
