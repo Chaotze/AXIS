@@ -254,7 +254,7 @@ impl FileSystem for Devfs {
             .ok_or(crate::lib::result::KernelError::InvalidArgument)
     }
 
-    fn read(&self, ino: InodeNumber, offset: u64, buf: &mut [u8]) -> KernelResult<usize> {
+    fn read(&self, ino: InodeNumber, _offset: u64, buf: &mut [u8]) -> KernelResult<usize> {
         let node = self.get_node(ino)
             .ok_or(crate::lib::result::KernelError::InvalidArgument)?;
 
@@ -279,11 +279,9 @@ impl FileSystem for Devfs {
                         Err(crate::lib::result::KernelError::InvalidArgument)
                     }
                     CharDeviceType::Random => {
-                        // /dev/random 返回伪随机数
-                        let mut seed = offset as u32;
+                        // /dev/random 返回高质量伪随机数（MT19937-64）
                         for b in buf.iter_mut() {
-                            seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
-                            *b = (seed >> 16) as u8;
+                            *b = crate::lib::random::random_u8();
                         }
                         Ok(buf.len())
                     }

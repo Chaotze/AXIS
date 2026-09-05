@@ -19,6 +19,7 @@ pub mod time;
 pub mod debug;
 pub mod vga;
 pub mod collections;
+pub mod random;
 
 // 重新导出常用类型
 pub use result::{KernelError, KernelResult};
