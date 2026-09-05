@@ -43,6 +43,10 @@ pub extern "C" fn _boot_rust() -> ! {
     println!("\n[INIT] Initializing file system...");
     axis_kernel::fs::init();
 
+    // 网络协议栈初始化（IPv4/IPv6、TCP/UDP、Socket、ARP）
+    println!("\n[INIT] Initializing network stack...");
+    axis_kernel::net::init();
+
     // 系统就绪
     println!("\n[INIT] System initialized successfully!");
     println!("[INIT] Kernel is now running...");

@@ -103,7 +103,7 @@ function Invoke-Build {
     # 创建磁盘镜像（0.5MB，1024 扇区）
     $imgSize = 0.5 * 1024 * 1024
     $bytes = New-Object byte[] $imgSize
-    $imgPath = Join-Path $axisPath "target\axis-0.1.4-bios-x86_64.img"
+    $imgPath = Join-Path $axisPath "target\axis-0.2.0-bios-x86_64.img"
     [System.IO.File]::WriteAllBytes($imgPath, $bytes)
     Write-Info "Image file created: $imgPath"
 
@@ -142,7 +142,7 @@ function Invoke-Run {
     $qemuCmdParts = @(
         'qemu-system-x86_64',
         '-cpu max',
-        '-drive format=raw,file=target\axis-0.1.4-bios-x86_64.img',
+        '-drive format=raw,file=target\axis-0.2.0-bios-x86_64.img',
         '-display curses',
         '-m 128M -no-reboot -no-shutdown'
     )
@@ -150,7 +150,7 @@ function Invoke-Run {
     wt -w 0 new-tab `
         -d . `
         -p "Windows PowerShell" `
-        --title "axis-0.1.4-bios-x86_64" `
+        --title "axis-0.2.0-bios-x86_64" `
         -- powershell -NoExit -Command "& { $qemuCmd }"
 }
 
