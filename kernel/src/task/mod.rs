@@ -99,11 +99,6 @@ pub fn init() {
     println!("[TASK] task subsystem ready ({} slots)", MAX_TASKS);
     selftest();
 
-    // 开调度：init 与 3 个演示任务进入就绪队列；
-    // 此后主循环成为 idle 任务，由定时器中断驱动切换
-    start_scheduling();
-    println!("[TASK] scheduling started (4 kernel threads, CFS preemption)");
-
     // 初始化完成：恢复中断，首个 tick 开始真实抢占切换
     unsafe {
         crate::arch::x86_64::cpu::irq_restore(flags);
@@ -115,7 +110,7 @@ pub fn init() {
 /// 为什么单独成步：
 /// - 自测（selftest）在调度开启前同步运行，输出不被并发
 ///   任务穿插；本函数返回后，首次 tick 即开始抢占切换
-fn start_scheduling() {
+pub fn start_scheduling() {
     let mut guard = TASK.lock();
     let Some(state) = guard.as_mut() else { return };
 
@@ -234,14 +229,97 @@ pub fn stats() -> TaskStats {
         let guard = TASK.lock();
         match guard.as_ref() {
             None => TaskStats::default(),
-            Some(state) => TaskStats {
-                total_tasks: state.table.len(),
-                runqueue_len: state.sched.runqueue.len(),
-                current: state.sched.current,
-                simulated_ticks: state.simulated_ticks,
-                context_switches: state.context_switches,
-            },
+            Some(state) => {
+                // 计算 idle 任务的运行时间
+                // idle 任务从系统启动开始运行，idle_ticks = 当前总 tick - idle 创建 tick
+                let idle_ticks = if let Some(idle_pcb) = state.table.get(process::IDLE_PID) {
+                    state.simulated_ticks.saturating_sub(idle_pcb.start_tick)
+                } else {
+                    0
+                };
+
+                TaskStats {
+                    total_tasks: state.table.len(),
+                    runqueue_len: state.sched.runqueue.len(),
+                    current: state.sched.current,
+                    simulated_ticks: state.simulated_ticks,
+                    context_switches: state.context_switches,
+                    idle_ticks,
+                }
+            }
         }
+    };
+    unsafe {
+        crate::arch::x86_64::cpu::irq_restore(flags);
+    }
+    result
+}
+
+/// 获取所有存活进程的 PID 列表
+///
+/// 用途：procfs readdir() 时需要列出所有进程目录。
+/// 为什么提供这个接口而非让 procfs 直接访问任务表：
+/// - 保持模块封装性（procfs 不依赖内部结构变化）
+/// - 集中权限管理（irq_save/锁保护在这里）
+/// - 便于未来支持过滤（如按状态、按权限等）
+pub fn list_all_pids() -> alloc::vec::Vec<u32> {
+    let flags = crate::arch::x86_64::cpu::irq_save();
+    let result = {
+        let guard = TASK.lock();
+        let mut pids = alloc::vec::Vec::new();
+        if let Some(state) = guard.as_ref() {
+            for pid in 0..MAX_TASKS as u32 {
+                if state.table.exists(pid) {
+                    if let Some(pcb) = state.table.get(pid) {
+                        // 只列出活进程（包括 idle）
+                        if pcb.is_alive() {
+                            pids.push(pid);
+                        }
+                    }
+                }
+            }
+        }
+        pids
+    };
+    unsafe {
+        crate::arch::x86_64::cpu::irq_restore(flags);
+    }
+    result
+}
+
+/// 获取指定进程的信息
+///
+/// 用途：procfs stat/status 等文件需要获取进程详细信息。
+/// 为什么返回 Option：进程可能不存在或已退出
+pub fn get_process_info(pid: u32) -> Option<ProcessInfo> {
+    let flags = crate::arch::x86_64::cpu::irq_save();
+    let result = {
+        let guard = TASK.lock();
+        guard.as_ref().and_then(|state| {
+            state.table.get(pid).and_then(|pcb| {
+                if pcb.is_alive() {
+                    // 生成进程名称
+                    let mut name = [0u8; 16];
+                    let name_str = alloc::format!("task{}", pid);
+                    let name_bytes = name_str.as_bytes();
+                    let copy_len = core::cmp::min(name_bytes.len(), 15);
+                    name[..copy_len].copy_from_slice(&name_bytes[..copy_len]);
+
+                    Some(ProcessInfo {
+                        pid,
+                        ppid: pcb.parent,
+                        state: pcb.state,
+                        nice: pcb.main_thread.nice,
+                        vruntime: pcb.main_thread.vruntime,
+                        name,
+                        name_len: copy_len,
+                        start_tick: pcb.start_tick,
+                    })
+                } else {
+                    None
+                }
+            })
+        })
     };
     unsafe {
         crate::arch::x86_64::cpu::irq_restore(flags);
@@ -262,6 +340,32 @@ pub struct TaskStats {
     pub simulated_ticks: u64,
     /// 累计上下文切换次数
     pub context_switches: u64,
+    /// idle(PID 0) 任务运行的 tick 数（空闲时间）
+    pub idle_ticks: u64,
+}
+
+/// 进程信息结构（用于 procfs 等子系统读取）
+///
+/// 为什么设计这个结构：
+/// - procfs 需要显示进程的详细信息，但无法直接访问全局任务表
+/// - 通过公开接口而非暴露内部 PCB，保持模块封装性
+#[derive(Debug, Clone)]
+pub struct ProcessInfo {
+    /// 进程号
+    pub pid: u32,
+    /// 父进程号
+    pub ppid: u32,
+    /// 进程状态
+    pub state: pcb::ProcessState,
+    /// nice 值（优先级调整）
+    pub nice: i8,
+    /// 虚拟运行时间（CFS 权重计算用）
+    pub vruntime: u64,
+    /// 进程名称（演示系统为 task{pid}）
+    pub name: [u8; 16],
+    pub name_len: usize,
+    /// 创建时刻（系统启动以来的 tick）
+    pub start_tick: u64,
 }
 
 // ---------------------------------------------------------------------
@@ -320,7 +424,7 @@ extern "C" fn init_task(_arg: u64) -> ! {
         if round % 1_000_000_000 == 0 {
             let s = stats();
             println!(
-                "[INITTASK] ticks={} switches={} runq={}",
+                "[INIT] ticks={} switches={} runq={}",
                 s.simulated_ticks, s.context_switches, s.runqueue_len
             );
         }
@@ -340,7 +444,7 @@ extern "C" fn demo_task(arg: u64) -> ! {
     loop {
         round += 1;
         if round % 1_000_000_000 == 0 {
-            println!("  [DEMOTASK {}] round=1G", id);
+            println!("  [TASK {}] round=1G", id);
         }
     }
 }

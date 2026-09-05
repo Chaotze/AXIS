@@ -103,6 +103,21 @@ pub fn uptime_seconds() -> u64 {
     uptime_ms() / 1000
 }
 
+/// 获取当前时间戳（用于文件系统的 inode 时间戳）
+///
+/// 返回自启动以来的秒数（作为伪 Unix 时间戳）。在完整 RTC 支持前，
+/// 这提供了单调递增的时间戳用于 atime/mtime/ctime。
+///
+/// 为什么这样设计：
+/// - AXIS 内核还未集成 BIOS 或 RTC 读取，无法获得墙钟时间
+/// - 文件系统的 inode 元数据需要时间戳以支持 ls -la 等命令
+/// - 使用开机以来的秒数作为临时方案，确保时间单调递增
+/// - 将来 RTC 集成后，可直接替换返回值为真实 Unix 时间戳
+#[inline]
+pub fn current_timestamp_secs() -> i64 {
+    uptime_seconds() as i64
+}
+
 /// 忙等待指定的毫秒数
 ///
 /// 注意：这是忙等待，会占用 CPU

@@ -39,6 +39,10 @@ pub extern "C" fn _boot_rust() -> ! {
     println!("\n[INIT] Initializing task subsystem...");
     axis_kernel::task::init();
 
+    // 文件系统初始化（VFS、tmpfs、devfs、procfs、sysfs）
+    println!("\n[INIT] Initializing file system...");
+    axis_kernel::fs::init();
+
     // 系统就绪
     println!("\n[INIT] System initialized successfully!");
     println!("[INIT] Kernel is now running...");
@@ -46,8 +50,13 @@ pub extern "C" fn _boot_rust() -> ! {
     // 再次打印启动 Banner
     print_banner();
 
+    // 开调度：init 与 3 个演示任务进入就绪队列；
+    // 此后主循环成为 idle 任务，由定时器中断驱动切换
+    axis_kernel::task::start_scheduling();
+    println!("\n[TASK] Starting scheduling... (4 kernel threads, CFS preemption)");
+
     // 主循环
-    // 暂时只是挂起等待中断
+    // 挂起等待中断
     loop {
         unsafe {
             core::arch::asm!("hlt");
