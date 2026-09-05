@@ -29,9 +29,7 @@ pub mod pci;
 pub mod display;
 pub mod input;
 pub mod block;
-
-// 以下子模块随阶段 6 推进逐个接入：
-// pub mod nic;
+pub mod nic;
 
 /// 设备驱动初始化入口（由 main.rs 调用）
 ///
@@ -39,6 +37,12 @@ pub mod block;
 /// 串口；ACPI 先于 PCI（MCFG 提供 ECAM 段）；PCI 先于各设备
 /// 驱动（探测依赖枚举结果）。
 pub fn init() {
+    // 全程关中断（irqsave 纪律，与 task::init 一致）：
+    // 驱动初始化与自测会频繁分配/格式化（String、锁、MMIO），
+    // 若被定时器 tick 打断，中断路径与初始化路径可能互相干扰；
+    // QEMU 实测 1000Hz tick 下自测结果出现非确定性错误。
+    let flags = crate::arch::x86_64::cpu::irq_save();
+
     // 1. 串口驱动
     println!("[DRV] Initializing serial driver...");
     serial::init();
@@ -63,11 +67,17 @@ pub fn init() {
     println!("[DRV] Initializing block devices...");
     block::init();
 
-    // 后续子系统初始化随模块接入逐个开启：
-    // nic::init();
+    // 7. 网卡驱动（e1000/igc/virtio-net 探测 + 回环网卡）
+    println!("[DRV] Initializing NICs...");
+    let _ = nic::init();
 
     // 运行设备驱动自测
     selftest();
+
+    // 恢复中断（此后调度器接管，启动定时器驱动 multi-task）
+    unsafe {
+        crate::arch::x86_64::cpu::irq_restore(flags);
+    }
 }
 
 /// 设备驱动启动自测入口（返回是否全部通过）
@@ -80,6 +90,7 @@ pub fn selftest() -> bool {
     all &= t("display framebuffer", display::selftest());
     all &= t("input ps2 decoders", input::selftest());
     all &= t("block devices", block::selftest());
+    all &= t("nic drivers", nic::selftest());
     // 后续子系统的自测由各自模块的 selftest 提供，随模块接入逐步开启
     println!("[DRV-SELFTEST] Result: {}", if all { "ALL PASS" } else { "FAILED" });
     all
