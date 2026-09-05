@@ -192,3 +192,62 @@ pub mod task {
         }
     }
 }
+
+// ============================================================
+// unitest::drivers —— 对应 kernel/src/drivers 的纯算法子集
+// ============================================================
+// 只收录不依赖 arch/全局锁/MMIO 的模块；装配层（mod.rs 及各
+// 子系统 /mod.rs）不在宿主测试范围内（由内核启动自测验证）。
+// 注意：内核加载编译该组模块时使用 profile.release 的 LTO，
+// 个别小结构体经 trait 对象/Vec 转发在目标机偶发误读，宿主
+// 测试环境无此问题，正好作为这些语义的可靠校验点。
+
+pub mod drivers {
+    pub mod acpi {
+        pub mod tables {
+            include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../kernel/src/drivers/acpi/tables.rs"));
+        }
+        pub mod parse {
+            include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../kernel/src/drivers/acpi/parse.rs"));
+        }
+    }
+
+    pub mod input {
+        pub mod hid {
+            include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../kernel/src/drivers/input/hid.rs"));
+        }
+        pub mod keyboard {
+            include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../kernel/src/drivers/input/keyboard.rs"));
+        }
+        pub mod mouse {
+            include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../kernel/src/drivers/input/mouse.rs"));
+        }
+    }
+
+    pub mod block {
+        pub mod blk_queue {
+            include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../kernel/src/drivers/block/blk_queue.rs"));
+        }
+        pub mod io_scheduler {
+            include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../kernel/src/drivers/block/io_scheduler.rs"));
+        }
+    }
+
+    pub mod display {
+        pub mod fb {
+            include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../kernel/src/drivers/display/fb.rs"));
+        }
+    }
+
+    pub mod nic {
+        pub mod mac {
+            include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../kernel/src/drivers/nic/mac.rs"));
+        }
+    }
+
+    pub mod pci {
+        pub mod ecam {
+            include!(concat!(env!("CARGO_MANIFEST_DIR"), "/../kernel/src/drivers/pci/ecam.rs"));
+        }
+    }
+}

@@ -303,8 +303,8 @@ mod tests {
 
     #[test]
     fn test_parse_madt() {
-        // 头部 36 + lapic_addr(4) + flags(4) + 两个条目
-        let mut data = make_header(b"APIC", 36 + 4 + 4 + 12 + 12);
+        // 头部 36 + lapic_addr(4) + flags(4) + LocalAPIC(8) + IOAPIC(12) = 64
+        let mut data = make_header(b"APIC", 36 + 4 + 4 + 8 + 12);
         data.extend_from_slice(&0xFEE0_0000u32.to_le_bytes()); // lapic
         data.extend_from_slice(&1u32.to_le_bytes());          // flags
         // Local APIC 条目（启用）
@@ -326,7 +326,9 @@ mod tests {
         assert_eq!(info.lapic_address, 0xFEE0_0000);
         assert_eq!(info.lapic_count, 1);
         assert_eq!(info.io_apics.len(), 1);
-        assert_eq!(info.io_apics[0].address, 0xFEC0_0000);
+        // 打包结构体字段未对齐，先拷贝到局部变量再断言（E0793）
+        let io_addr = info.io_apics[0].address;
+        assert_eq!(io_addr, 0xFEC0_0000);
     }
 
     #[test]
@@ -342,9 +344,15 @@ mod tests {
 
         let info = parse_mcfg(&data).unwrap();
         assert_eq!(info.allocations.len(), 1);
-        assert_eq!(info.allocations[0].base_address, 0xE000_0000);
-        assert_eq!(info.allocations[0].start_bus, 0);
-        assert_eq!(info.allocations[0].end_bus, 255);
+        // 打包结构体字段未对齐，先拷贝到局部变量再断言（E0793）
+        let (base, start, end) = (
+            info.allocations[0].base_address,
+            info.allocations[0].start_bus,
+            info.allocations[0].end_bus,
+        );
+        assert_eq!(base, 0xE000_0000);
+        assert_eq!(start, 0);
+        assert_eq!(end, 255);
     }
 
     #[test]

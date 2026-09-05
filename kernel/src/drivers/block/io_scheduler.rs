@@ -267,9 +267,9 @@ mod tests {
         s.push(req(ReqOp::Read, 50, 1));
         s.push(req(ReqOp::Read, 0, 1));
         s.push(req(ReqOp::Read, 49, 1));
-        // 磁头 0 → 0 → 50；随后磁头在 50，下一请求 49 比 0 近
+        // 磁头 0：先取 0（距离 0）；磁头到 1 后，49 比 50 近，再取 50
         assert_eq!(s.pop().unwrap().lba, 0);
-        assert_eq!(s.pop().unwrap().lba, 50);
         assert_eq!(s.pop().unwrap().lba, 49);
+        assert_eq!(s.pop().unwrap().lba, 50);
     }
 }

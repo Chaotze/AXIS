@@ -315,7 +315,8 @@ mod tests {
         let ev = kbd.feed(0x48).unwrap(); // Up
         assert_eq!(ev.key, Key::Up);
         assert!(ev.pressed);
-        let ev = kbd.feed(0xC8).unwrap(); // Up 松开（E0 前缀）
+        assert!(kbd.feed(0xE0).is_none());
+        let ev = kbd.feed(0xC8).unwrap(); // Up 松开（同样 E0 前缀）
         assert_eq!(ev.key, Key::Up);
         assert!(!ev.pressed);
     }

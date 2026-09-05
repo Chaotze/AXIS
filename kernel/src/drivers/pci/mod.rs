@@ -36,6 +36,17 @@ static DEVICES: Spinlock<Vec<PciDevice>> = Spinlock::new(Vec::new());
 /// 递归枚举的最大总线深度（防御桥接环路）
 const MAX_BUS_DEPTH: u8 = 8;
 
+/// 从 ACPI MCFG 表构建 ECAM 段列表（依赖 acpi::init 先执行）
+pub fn ecam_regions_from_acpi() -> alloc::vec::Vec<ecam::EcamRegion> {
+    let mut raw = alloc::vec::Vec::new();
+    if let Some(mcfg) = crate::drivers::acpi::mcfg() {
+        for a in mcfg.allocations {
+            raw.push((a.base_address, a.pci_segment, a.start_bus, a.end_bus));
+        }
+    }
+    ecam::regions_from_mcfg(&raw)
+}
+
 /// PCI 初始化入口：枚举全部设备并打印摘要
 ///
 /// 顺序为什么在 ACPI 之后：枚举本身用端口 I/O，不依赖 ACPI；

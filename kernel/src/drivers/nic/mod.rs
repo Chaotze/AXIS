@@ -17,6 +17,7 @@ pub mod driver;
 pub mod e1000;
 pub mod igc;
 pub mod virtio;
+pub mod mac;
 
 use crate::prelude::KernelResult;
 use self::driver::{LoopbackNic, MacAddr, NicDevice};

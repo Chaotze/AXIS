@@ -12,7 +12,13 @@
 //
 // 纯逻辑设计：请求结构与队列不接触硬件，可宿主单测。
 
-use crate::prelude::{KernelError, KernelResult};
+/// 队列错误（纯逻辑模块自带的轻量错误，避免依赖内核胶水层，
+/// 以便宿主单元测试直接编译本文件）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueueError {
+    /// 队列已满
+    Full,
+}
 
 /// 请求操作类型
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,9 +108,9 @@ impl BlkQueue {
     }
 
     /// 提交一个请求（返回填入的序号）
-    pub fn submit(&mut self, req: &mut BlkRequest) -> KernelResult<u64> {
+    pub fn submit(&mut self, req: &mut BlkRequest) -> Result<u64, QueueError> {
         if self.outstanding >= self.capacity {
-            return Err(KernelError::Unsupported); // 队列已满，应由调度器背压
+            return Err(QueueError::Full); // 队列已满，应由调度器背压
         }
         let seq = self.next_seq;
         self.next_seq += 1;

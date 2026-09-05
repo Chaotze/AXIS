@@ -53,22 +53,14 @@ impl EcamRegion {
     }
 }
 
-/// 从 ACPI MCFG 表构建 ECAM 段列表
-///
-/// 依赖 ACPI 子系统（需在 pci::init 之前调用 acpi::init）。
-pub fn ecam_regions_from_acpi() -> alloc::vec::Vec<EcamRegion> {
-    let mut regions = alloc::vec::Vec::new();
-    if let Some(mcfg) = crate::drivers::acpi::mcfg() {
-        for a in mcfg.allocations {
-            regions.push(EcamRegion {
-                base_address: a.base_address,
-                segment: a.pci_segment,
-                start_bus: a.start_bus,
-                end_bus: a.end_bus,
-            });
-        }
-    }
-    regions
+/// 从 MCFG 段分配表构建 ECAM 段列表（纯函数）
+pub fn regions_from_mcfg(allocations: &[(u64, u16, u8, u8)]) -> alloc::vec::Vec<EcamRegion> {
+    allocations.iter().map(|&(base, seg, start, end)| EcamRegion {
+        base_address: base,
+        segment: seg,
+        start_bus: start,
+        end_bus: end,
+    }).collect()
 }
 
 #[cfg(test)]

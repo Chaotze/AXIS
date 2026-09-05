@@ -292,8 +292,10 @@ mod tests {
 
     #[test]
     fn test_vga_cell() {
+        use super::vga_text::Cell;
         let cell = Cell { ch: b'A', fg: Cell::WHITE, bg: Cell::BLACK };
-        assert_eq!(cell.to_u16(), (0x07 << 8) | b'A' as u16);
+        // WHITE=15（见调色板定义），不是 0x07（LIGHT_GRAY）
+        assert_eq!(cell.to_u16(), (Cell::WHITE as u16) << 8 | b'A' as u16);
         assert_eq!(Cell::from_u16((0x47 << 8) | 0x42), Cell { ch: b'B', fg: 0x7, bg: 0x4 });
     }
 }

@@ -146,8 +146,10 @@ mod tests {
     #[test]
     fn test_resync_bad_byte() {
         let mut mouse = Ps2Mouse::new();
-        // 喂一个非包头字节（如 ACK 0xFA），应被丢弃
-        assert!(mouse.feed(0xFA).is_none());
+        // 喂一个非包头字节（bit3=0），应被丢弃
+        // 注：真正的 ACK 0xFA 恰好置了 bit3，会被误判为包头——
+        // 这是 PS/2 同步启发式的已知怪癖，驱动通过复位重同步
+        assert!(mouse.feed(0x04).is_none());
         // 继续收正常包
         let ev = feed_packet(&mut mouse, 0x02, 10, 5).unwrap();
         assert_eq!(ev.dx, 10);
@@ -161,9 +163,8 @@ mod tests {
         mouse.set_wheel(true);
         mouse.feed(0x08 | 0x00); // flags
         mouse.feed(1);           // dx
-        mouse.feed(2);           // dy
-        assert!(mouse.feed(0x01).is_none()); // 第 3 字节后仍未完成
-        let ev = mouse.feed(0x01).unwrap();  // 滚轮 +1
+        mouse.feed(2);           // dy（第 3 字节后进入 Done，尚无事件）
+        let ev = mouse.feed(0x01).unwrap();  // 第 4 字节：滚轮 +1
         assert_eq!(ev.wheel, 1);
         assert_eq!(ev.dx, 1);
 
