@@ -33,6 +33,9 @@ pub mod task;
 // 虚拟文件系统和文件系统实现
 pub mod fs;
 
+// 网络协议栈（IPv4/IPv6、TCP/UDP、Socket）
+pub mod net;
+
 // 库函数模块（打印、字符串、哈希、CRC、位操作、
 // 错误类型、时间、调试以及定长 collections 数据结构）
 //
