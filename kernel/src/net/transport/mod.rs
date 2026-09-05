@@ -15,17 +15,22 @@ use crate::lib::result::KernelResult;
 // ============================================================
 
 /// 发送传输层数据
+/// 为什么需要此接口：上层协议（IP层）通过此接口调用传输层
 pub fn send_data(
     protocol: u8,
+    src_ip: [u8; 4],
     src_port: u16,
+    dst_ip: [u8; 4],
     dst_port: u16,
     data: &[u8],
 ) -> KernelResult<usize> {
     match protocol {
         crate::net::config::ip_protocol::UDP => {
-            udp::send_packet(src_port, dst_port, data)
+            udp::send_packet(src_ip, src_port, dst_ip, dst_port, data)
         }
         crate::net::config::ip_protocol::TCP => {
+            // TCP 也需要类似的参数
+            let _ = (src_ip, dst_ip);
             tcp::send_packet(src_port, dst_port, data)
         }
         _ => Err(crate::prelude::KernelError::Unsupported),
@@ -33,10 +38,23 @@ pub fn send_data(
 }
 
 /// 接收传输层数据
-pub fn recv_data(protocol: u8, data: &[u8]) -> KernelResult<()> {
+/// 为什么需要此接口：IP 层识别协议号后分发给传输层处理
+pub fn recv_data(
+    protocol: u8,
+    src_ip: [u8; 4],
+    src_port: u16,
+    dst_port: u16,
+    data: &[u8],
+) -> KernelResult<()> {
     match protocol {
-        crate::net::config::ip_protocol::UDP => udp::recv_packet(data),
-        crate::net::config::ip_protocol::TCP => tcp::recv_packet(data),
+        crate::net::config::ip_protocol::UDP => {
+            udp::recv_packet(src_ip, src_port, dst_port, data)
+        }
+        crate::net::config::ip_protocol::TCP => {
+            // TCP 也需要类似的参数
+            let _ = (src_ip, src_port, dst_port);
+            tcp::recv_packet(data)
+        }
         _ => Err(crate::prelude::KernelError::Unsupported),
     }
 }

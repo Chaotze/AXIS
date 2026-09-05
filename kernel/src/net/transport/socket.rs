@@ -287,23 +287,74 @@ impl SocketTable {
 // ============================================================
 
 pub fn selftest() -> bool {
-    // Socket 创建测试
+    // 1. Socket 地址创建测试
+    let addr = SocketAddr::new([192, 168, 1, 1], 8080);
+    assert_eq!(addr.family, AddressFamily::Inet, "地址族不正确");
+    assert_eq!(addr.port, 8080, "端口号不正确");
+    assert_eq!(addr.addr, [192, 168, 1, 1], "IP 地址不正确");
+
+    // 2. 特殊地址测试
+    let any_addr = SocketAddr::any(5000);
+    assert_eq!(any_addr.addr, [0, 0, 0, 0], "任意地址不正确");
+
+    let lo_addr = SocketAddr::loopback(9000);
+    assert_eq!(lo_addr.addr, [127, 0, 0, 1], "环回地址不正确");
+
+    // 3. Socket 表创建测试
     let mut table = SocketTable::new();
-    let fd = table.socket(AddressFamily::Inet, SocketType::Stream)
-        .expect("创建 Socket 失败");
+    assert_eq!(table.len(), 0, "初始表大小应为 0");
+    assert_eq!(table.next_fd, 3, "初始 FD 应为 3");
 
-    // 绑定测试
-    let socket = table.get_mut(fd).expect("获取 Socket 失败");
-    let addr = SocketAddr::new([127, 0, 0, 1], 8080);
-    socket.bind(addr).expect("绑定失败");
-    assert_eq!(socket.state, SocketState::Bound, "状态不正确");
+    // 4. TCP Socket 创建测试
+    let tcp_fd = table.socket(AddressFamily::Inet, SocketType::Stream)
+        .expect("创建 TCP Socket 失败");
+    assert_eq!(tcp_fd, 3, "第一个 FD 应为 3");
+    assert_eq!(table.len(), 1, "表大小应为 1");
 
-    // 监听测试
-    socket.listen(5).expect("监听失败");
-    assert_eq!(socket.state, SocketState::Listening, "监听状态不正确");
+    // 5. UDP Socket 创建测试
+    let udp_fd = table.socket(AddressFamily::Inet, SocketType::Dgram)
+        .expect("创建 UDP Socket 失败");
+    assert_eq!(udp_fd, 4, "第二个 FD 应为 4");
+    assert_eq!(table.len(), 2, "表大小应为 2");
 
-    // Socket 表管理测试
-    assert_eq!(table.len(), 1, "Socket 表大小不正确");
+    // 6. TCP Socket 绑定测试
+    let tcp_socket = table.get_mut(tcp_fd).expect("获取 TCP Socket 失败");
+    let server_addr = SocketAddr::new([0, 0, 0, 0], 8080);
+    tcp_socket.bind(server_addr).expect("TCP 绑定失败");
+    assert_eq!(tcp_socket.state, SocketState::Bound, "TCP 状态应为 BOUND");
+    assert!(tcp_socket.local_addr.is_some(), "本地地址应已设置");
+
+    // 7. TCP Socket 监听测试
+    tcp_socket.listen(128).expect("TCP 监听失败");
+    assert_eq!(tcp_socket.state, SocketState::Listening, "TCP 状态应为 LISTENING");
+
+    // 8. UDP Socket 绑定测试
+    let udp_socket = table.get_mut(udp_fd).expect("获取 UDP Socket 失败");
+    let udp_addr = SocketAddr::new([0, 0, 0, 0], 5353);
+    udp_socket.bind(udp_addr).expect("UDP 绑定失败");
+    assert_eq!(udp_socket.state, SocketState::Bound, "UDP 状态应为 BOUND");
+
+    // 9. Socket 发送接收缓冲区测试
+    let test_data = b"Hello Socket";
+    udp_socket.send_buffer.extend_from_slice(test_data);
+    assert_eq!(udp_socket.send_buffer.len(), test_data.len(), "发送缓冲区大小不正确");
+
+    // 10. Socket 接收测试
+    udp_socket.recv_buffer.extend_from_slice(test_data);
+    let mut recv_buf = [0u8; 20];
+    let read = udp_socket.recv(&mut recv_buf).expect("接收失败");
+    assert_eq!(read, test_data.len(), "接收字节数不正确");
+    assert_eq!(&recv_buf[0..read], test_data, "接收数据不匹配");
+    assert!(udp_socket.recv_buffer.is_empty(), "接收缓冲区应为空");
+
+    // 11. Socket 关闭测试
+    let close_result = table.close(tcp_fd);
+    assert!(close_result.is_ok(), "关闭 Socket 失败");
+    assert_eq!(table.len(), 1, "关闭后表大小应为 1");
+
+    // 12. 关闭已关闭的 Socket 应该失败
+    let close_again = table.close(tcp_fd);
+    assert!(close_again.is_err(), "关闭已关闭的 Socket 应失败");
 
     true
 }

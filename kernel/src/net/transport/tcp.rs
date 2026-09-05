@@ -185,7 +185,7 @@ impl TcpConnection {
             src_port,
             dst_port,
             state: TcpState::Closed,
-            snd_seq: 0,  // 应该随机初始化
+            snd_seq: 1000,  // 简化版，应该随机初始化
             rcv_seq: 0,
             recv_buffer: alloc::vec::Vec::new(),
             send_buffer: alloc::vec::Vec::new(),
@@ -193,8 +193,133 @@ impl TcpConnection {
     }
 
     /// 获取连接标识（用于查找）
+    /// 为什么用四元组：唯一标识一条TCP连接
     pub fn tuple(&self) -> ([u8; 4], u16, [u8; 4], u16) {
         (self.src_ip, self.src_port, self.dst_ip, self.dst_port)
+    }
+
+    /// 主动发起连接（客户端 SYN）
+    /// 为什么需要：支持客户端主动发起TCP连接
+    pub fn initiate_connection(&mut self) -> KernelResult<()> {
+        if self.state != TcpState::Closed {
+            return Err(KernelError::InvalidArgument);
+        }
+
+        // 转换到 SYN_SENT 状态，等待服务器的 SYN+ACK
+        self.state = TcpState::SynSent;
+        // snd_seq 已在创建时初始化
+        Ok(())
+    }
+
+    /// 处理服务器的 SYN+ACK（客户端侧）
+    /// 为什么需要：第二次握手的处理
+    pub fn handle_synack(&mut self, ack_num: u32, recv_seq: u32) -> KernelResult<()> {
+        if self.state != TcpState::SynSent {
+            return Err(KernelError::InvalidArgument);
+        }
+
+        // 验证 ACK 号是否正确（应该是 snd_seq + 1）
+        if ack_num != self.snd_seq + 1 {
+            return Err(KernelError::InvalidArgument);
+        }
+
+        // 记录对方的初始序列号
+        self.rcv_seq = recv_seq;
+        // 准备发送 ACK
+        self.snd_seq += 1;
+        // 转换到 ESTABLISHED 状态
+        self.state = TcpState::Established;
+        Ok(())
+    }
+
+    /// 监听连接（服务器）
+    /// 为什么需要：服务器端进入监听状态
+    pub fn listen(&mut self) -> KernelResult<()> {
+        if self.state != TcpState::Closed {
+            return Err(KernelError::InvalidArgument);
+        }
+
+        self.state = TcpState::Listen;
+        Ok(())
+    }
+
+    /// 处理客户端的 SYN（服务器侧）
+    /// 为什么需要：第一次握手的处理
+    pub fn handle_syn(&mut self, recv_seq: u32) -> KernelResult<()> {
+        if self.state != TcpState::Listen {
+            return Err(KernelError::InvalidArgument);
+        }
+
+        // 记录客户端的初始序列号
+        self.rcv_seq = recv_seq;
+        // 转换到 SYN_RCVD 状态，准备发送 SYN+ACK
+        self.state = TcpState::SynRecvd;
+        // snd_seq 已在创建时初始化
+        Ok(())
+    }
+
+    /// 处理客户端的 ACK（服务器侧）
+    /// 为什么需要：第三次握手的处理
+    pub fn handle_ack(&mut self, ack_num: u32) -> KernelResult<()> {
+        if self.state != TcpState::SynRecvd {
+            return Err(KernelError::InvalidArgument);
+        }
+
+        // 验证 ACK 号是否正确（应该是 snd_seq + 1）
+        if ack_num != self.snd_seq + 1 {
+            return Err(KernelError::InvalidArgument);
+        }
+
+        // 更新发送序列号
+        self.snd_seq += 1;
+        // 连接建立
+        self.state = TcpState::Established;
+        Ok(())
+    }
+
+    /// 存储接收到的数据
+    pub fn store_received_data(&mut self, data: &[u8]) {
+        self.recv_buffer.extend_from_slice(data);
+    }
+
+    /// 获取接收缓冲区
+    pub fn get_recv_buffer(&self) -> &[u8] {
+        &self.recv_buffer
+    }
+
+    /// 清空接收缓冲区
+    pub fn clear_recv_buffer(&mut self) {
+        self.recv_buffer.clear();
+    }
+
+    /// 发起连接关闭（FIN）
+    pub fn close_connection(&mut self) -> KernelResult<()> {
+        match self.state {
+            TcpState::Established => {
+                self.state = TcpState::FinWait1;
+                Ok(())
+            }
+            TcpState::CloseWait => {
+                self.state = TcpState::LastAck;
+                Ok(())
+            }
+            _ => Err(KernelError::InvalidArgument),
+        }
+    }
+
+    /// 处理对方的 FIN
+    pub fn handle_fin(&mut self) -> KernelResult<()> {
+        match self.state {
+            TcpState::Established => {
+                self.state = TcpState::CloseWait;
+                Ok(())
+            }
+            TcpState::FinWait1 | TcpState::FinWait2 => {
+                self.state = TcpState::TimeWait;
+                Ok(())
+            }
+            _ => Err(KernelError::InvalidArgument),
+        }
     }
 }
 
@@ -253,34 +378,86 @@ pub fn create_fin(src_port: u16, dst_port: u16, seq_num: u32) -> TcpHeader {
 // ============================================================
 
 pub fn selftest() -> bool {
-    // TCP 包头创建
+    // 1. TCP 包头创建
     let header = TcpHeader::new(12345, 80, 1000, tcp_flags::SYN);
     assert_eq!(header.src_port(), 12345, "源端口不正确");
     assert_eq!(header.dst_port(), 80, "目标端口不正确");
     assert_eq!(header.seq_num(), 1000, "序列号不正确");
     assert!(header.has_syn(), "SYN 标志未设置");
 
-    // SYN+ACK 包创建
+    // 2. SYN+ACK 包创建
     let synack = create_synack(80, 12345, 2000, 1001);
     assert!(synack.has_syn(), "SYN 标志未设置");
     assert!(synack.has_ack(), "ACK 标志未设置");
     assert_eq!(synack.ack_num(), 1001, "确认号不正确");
 
-    // 包头序列化和解析
+    // 3. 包头序列化和解析
     let bytes = header.to_bytes();
     let parsed = TcpHeader::from_bytes(&bytes).unwrap_or_else(|_| {
         panic!("TCP 包头解析失败");
     });
     assert_eq!(parsed.src_port(), header.src_port(), "解析后源端口不匹配");
 
-    // TCP 连接创建
-    let conn = TcpConnection::new(
+    // 4. TCP 连接创建
+    let mut conn = TcpConnection::new(
         [192, 168, 1, 10],
         [8, 8, 8, 8],
         12345,
         80,
     );
     assert_eq!(conn.state, TcpState::Closed, "初始状态应为 CLOSED");
+
+    // 5. 客户端三次握手测试
+    // 第一步：客户端发起 SYN
+    conn.initiate_connection().unwrap_or_else(|_| {
+        panic!("initiate_connection 失败");
+    });
+    assert_eq!(conn.state, TcpState::SynSent, "应转换为 SYN_SENT");
+
+    // 第二步：客户端收到服务器的 SYN+ACK（seq=2000, ack=1001）
+    conn.handle_synack(1001, 2000).unwrap_or_else(|_| {
+        panic!("handle_synack 失败");
+    });
+    assert_eq!(conn.state, TcpState::Established, "应转换为 ESTABLISHED");
+    assert_eq!(conn.rcv_seq, 2000, "rcv_seq 应为 2000");
+
+    // 6. 服务器三次握手测试
+    let mut server_conn = TcpConnection::new(
+        [8, 8, 8, 8],
+        [192, 168, 1, 10],
+        80,
+        12345,
+    );
+
+    // 第一步：服务器监听
+    server_conn.listen().unwrap_or_else(|_| {
+        panic!("listen 失败");
+    });
+    assert_eq!(server_conn.state, TcpState::Listen, "应为 LISTEN");
+
+    // 第二步：服务器收到客户端的 SYN（seq=1000）
+    server_conn.handle_syn(1000).unwrap_or_else(|_| {
+        panic!("handle_syn 失败");
+    });
+    assert_eq!(server_conn.state, TcpState::SynRecvd, "应转换为 SYN_RCVD");
+    assert_eq!(server_conn.rcv_seq, 1000, "rcv_seq 应为 1000");
+
+    // 第三步：服务器收到客户端的 ACK（ack=snd_seq+1）
+    server_conn.handle_ack(server_conn.snd_seq + 1).unwrap_or_else(|_| {
+        panic!("handle_ack 失败");
+    });
+    assert_eq!(server_conn.state, TcpState::Established, "应转换为 ESTABLISHED");
+
+    // 7. 数据存储和接收测试
+    let test_data = b"Hello TCP";
+    server_conn.store_received_data(test_data);
+    assert_eq!(server_conn.get_recv_buffer(), test_data, "接收数据不匹配");
+
+    // 8. 连接关闭测试
+    server_conn.close_connection().unwrap_or_else(|_| {
+        panic!("close_connection 失败");
+    });
+    assert_eq!(server_conn.state, TcpState::FinWait1, "应转换为 FIN_WAIT_1");
 
     true
 }
