@@ -33,7 +33,7 @@ pub mod task;
 // 虚拟文件系统和文件系统实现
 pub mod fs;
 
-// 硬件驱动层（网卡、块设备等）
+// 设备驱动层（串口、显示、输入、块设备、网卡、PCI、ACPI）
 pub mod drivers;
 
 // 网络协议栈（IPv4/IPv6、TCP/UDP、Socket）

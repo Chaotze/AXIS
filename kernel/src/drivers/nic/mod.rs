@@ -1,113 +1,122 @@
+// 网络接口卡（NIC）子系统
 // ============================================================
-// 网络接口卡（NIC）驱动模块
-// ============================================================
-// 提供网络设备的统一抽象接口，支持多种 NIC 驱动
+// 网卡驱动入口：探测 e1000 / igc / virtio-net，注册测试用
+// 回环网卡，并提供网卡清单供网络协议栈使用。
 //
-// 设计原则：
-// - 所有 NIC 实现 NetworkDevice trait
-// - 虚拟 NIC 用于测试，真实 NIC 驱动后续集成
-// - 使用静态注册的单一网卡实例
+// 分层：
+//   driver.rs —— NicDevice trait、MAC 地址、注册表、回环网卡（纯逻辑）
+//   e1000.rs  —— Intel e1000 硬件驱动
+//   igc.rs    —— Intel i225/i226 探测
+//   virtio.rs —— VirtIO net 探测
+//   mac.rs    —— MAC 地址编解码
 
-pub mod virtual_nic;
+pub mod driver;
+pub mod e1000;
+pub mod igc;
+pub mod virtio;
+pub mod mac;
 
+use crate::prelude::KernelResult;
 use alloc::vec::Vec;
-use crate::lib::result::KernelResult;
-use crate::sync::Spinlock;
+use self::driver::{LoopbackNic, MacAddr, NicDevice};
 
 // ============================================================
-// 网络设备抽象 Trait
+// 全局网卡实例管理（供网络栈全局调用）
 // ============================================================
 
-/// 网络设备操作接口
-/// 所有 NIC 驱动必须实现此 trait
-pub trait NetworkDevice: Send + Sync {
-    /// 发送网络帧
-    /// 参数：frame - 完整的帧数据（包含以太网头）
-    /// 返回：发送的字节数
-    fn send(&self, frame: &[u8]) -> KernelResult<usize>;
+/// 全局回环网卡实例（用于网络栈的收发）
+static LOOPBACK_NIC: crate::sync::Spinlock<Option<LoopbackNic>> =
+    crate::sync::Spinlock::new(None);
 
-    /// 接收网络帧
-    /// 返回：接收到的帧数据（包含以太网头）
-    /// 注意：这是轮询方式，阻塞直到有数据
-    fn recv(&self) -> KernelResult<Vec<u8>>;
-
-    /// 获取 MAC 地址
-    fn mac_address(&self) -> [u8; 6];
-
-    /// 网络设备名称
-    fn name(&self) -> &str;
-
-    /// 启用网络设备
-    fn enable(&self) -> KernelResult<()>;
-
-    /// 禁用网络设备
-    fn disable(&self) -> KernelResult<()>;
-}
-
-// ============================================================
-// 全局网络设备管理
-// ============================================================
-
-/// 全局网络设备实例包装
-/// 使用 Option 存储网络设备，初始为 None
-/// 初始化后存储虚拟网卡的引用
-static NETWORK_DEVICE: Spinlock<Option<&'static dyn NetworkDevice>> = Spinlock::new(None);
-
-/// 全局虚拟网卡实例（单例）
-/// 为什么是全局 static：
-/// - 需要在整个内核生命周期内保持活跃
-/// - 虚拟网卡实现了 NetworkDevice trait 且是 'static
-static mut VNIC_INSTANCE: Option<virtual_nic::VirtualNic> = None;
-
-/// 初始化全局网络设备
-pub fn init_network_device() -> KernelResult<()> {
-    println!("[DRIVERS-NIC] Initializing network device...");
-
-    // 创建虚拟 NIC 用于测试
-    unsafe {
-        VNIC_INSTANCE = Some(virtual_nic::VirtualNic::new());
-
-        // 启用虚拟网卡
-        if let Some(ref vnic) = VNIC_INSTANCE {
-            vnic.enable()?;
-
-            // 将虚拟网卡注册为全局网络设备
-            let mut device = NETWORK_DEVICE.lock();
-            *device = Some(vnic as &'static dyn NetworkDevice);
-
-            println!("[DRIVERS-NIC] Network device initialized: {}", vnic.name());
-        }
-    }
-
-    Ok(())
-}
-
-/// 获取全局网络设备引用
-fn get_network_device() -> Option<&'static dyn NetworkDevice> {
-    let device = NETWORK_DEVICE.lock();
-    *device
-}
-
-/// 发送帧（通过全局网络设备）
+/// 发送帧（通过全局网卡）
 pub fn send_frame(frame: &[u8]) -> KernelResult<usize> {
-    match get_network_device() {
-        Some(dev) => dev.send(frame),
-        None => Err(crate::prelude::KernelError::NotFound),
+    let mut nic_guard = LOOPBACK_NIC.lock();
+    if let Some(ref mut nic) = *nic_guard {
+        nic.send(frame)?;
+        Ok(frame.len())
+    } else {
+        Err(crate::prelude::KernelError::NotFound)
     }
 }
 
-/// 接收帧（通过全局网络设备）
+/// 接收帧（通过全局网卡）
 pub fn recv_frame() -> KernelResult<Vec<u8>> {
-    match get_network_device() {
-        Some(dev) => dev.recv(),
-        None => Err(crate::prelude::KernelError::NotFound),
+    let mut nic_guard = LOOPBACK_NIC.lock();
+    if let Some(ref mut nic) = *nic_guard {
+        let mut buf = Vec::with_capacity(1500);
+        // 初始化缓冲区
+        buf.resize(1500, 0);
+        match nic.recv(&mut buf) {
+            Ok(n) => {
+                buf.truncate(n);
+                Ok(buf)
+            }
+            Err(e) => Err(e),
+        }
+    } else {
+        Err(crate::prelude::KernelError::NotFound)
     }
 }
 
 /// 获取本机 MAC 地址
 pub fn get_mac_address() -> [u8; 6] {
-    match get_network_device() {
-        Some(dev) => dev.mac_address(),
-        None => [0; 6],
+    let nic_guard = LOOPBACK_NIC.lock();
+    if let Some(ref nic) = *nic_guard {
+        nic.mac().0
+    } else {
+        [0; 6]
     }
 }
+
+// ============================================================
+// 网卡子系统初始化与自测
+// ============================================================
+
+/// 网卡子系统初始化
+pub fn init() -> KernelResult<()> {
+    // 硬件探测（未检测到设备时静默）
+    e1000::probe()?;
+    igc::probe()?;
+    virtio::probe()?;
+
+    // 初始化全局回环网卡实例
+    let mut loopback_guard = LOOPBACK_NIC.lock();
+    *loopback_guard = Some(LoopbackNic::new());
+
+    // 注册回环网卡信息（协议栈的基础设施）
+    driver::register_nic(driver::NicInfo {
+        name: "loopback",
+        mac: MacAddr::new([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]),
+        mtu: 1500,
+    });
+    Ok(())
+}
+
+/// 网卡子系统自测
+pub fn selftest() -> bool {
+    use self::driver::MacAddr;
+
+    let mut all = true;
+    let t = |name: &str, ok: bool| {
+        println!("    [{}] {}", if ok { "PASS" } else { "FAIL" }, name);
+        ok
+    };
+
+    let mac = MacAddr::from_slice(&[0x52, 0x54, 0x00, 0xAB, 0xCD, 0xEF]);
+    all &= t("mac classification", !mac.is_multicast() && !mac.is_broadcast());
+
+    let mut nic = LoopbackNic::new();
+    let frame = [0x33u8; 100];
+    let s = nic.send(&frame).is_ok();
+    let mut buf = [0u8; 100];
+    let r = nic.recv(&mut buf).is_ok() && &buf[..] == &frame[..];
+    all &= t("loopback send/recv", s && r);
+
+    all &= t("nic registry", driver::count() >= 1);
+    all &= t("nic list", driver::list().len() >= 1);
+
+    all
+}
+
+/// 供网络栈查询的网卡列表
+pub use driver::{list, count, NicInfo};

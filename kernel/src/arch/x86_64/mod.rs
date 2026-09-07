@@ -10,6 +10,7 @@ pub mod memory;
 pub mod paging;
 pub mod interrupt;
 pub mod context;
+pub mod io;
 
 /// x86_64 架构初始化
 ///
