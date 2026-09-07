@@ -157,29 +157,181 @@ pub fn clear_dentry_cache() {
 // 内核自测
 // ============================================================
 
-fn selftest() -> bool {
-    println!("\n[VFS-SELFTEST] VFS Subsystem Selftest");
-    let all = true;
-
-    // 基础模块单元测试已在各模块中进行
-    // 此处为集成测试
-
-    println!("[VFS-SELFTEST] VFS core traits: PASS");
-    println!("[VFS-SELFTEST] path parsing: PASS");
-    println!("[VFS-SELFTEST] inode permissions: PASS");
-    println!("[VFS-SELFTEST] dentry structure: PASS");
-    println!("[VFS-SELFTEST] dentry cache: PASS");
-    println!("[VFS-SELFTEST] page cache: PASS");
-    println!("[VFS-SELFTEST] mount management: PASS");
-    println!("[VFS-SELFTEST] file operations: PASS");
-
-    // 后续测试项：
-    // - tmpfs 挂载和文件操作
-    // - 路径穿越挂载点
-    // - 页缓存一致性
-    // - 权限检查
-
-    println!("[VFS-SELFTEST] Result: {}", if all { "ALL PASS" } else { "FAILED" });
+/// 运行文件系统全部自测；返回是否全部通过
+pub fn selftest() -> bool {
+    println!("\n[FS-SELFTEST] VFS Subsystem Selftest");
+    let mut all = true;
+    all &= t("path parsing & normalization", selftest_path_parsing());
+    all &= t("inode metadata & permissions", selftest_inode_metadata());
+    all &= t("dentry structure & links", selftest_dentry_structure());
+    all &= t("dentry cache operations", selftest_dcache_operations());
+    all &= t("page cache basics", selftest_pagecache_basics());
+    all &= t("mount table management", selftest_mount_table());
+    all &= t("file descriptor operations", selftest_file_operations());
+    println!("[FS-SELFTEST] Result: {}", if all { "ALL PASS" } else { "FAILED" });
     all
+}
 
+/// 单测断言容器
+fn t(name: &str, ok: bool) -> bool {
+    if ok {
+        println!("  [PASS] {}", name);
+    } else {
+        println!("  [FAIL] {}", name);
+    }
+    ok
+}
+
+/// 验收用宏
+macro_rules! check {
+    ($cond:expr $(, $msg:expr)?) => {
+        if !($cond) {
+            $(println!("    [check] FAILED at: {}", $msg);)?
+            return false;
+        }
+    };
+}
+
+/// 1) 路径解析与规范化
+fn selftest_path_parsing() -> bool {
+    // 测试基础路径解析
+    let p1 = path::parse_path(b"/etc/passwd");
+    check!(p1.is_ok(), "parse absolute path");
+    if let Ok(parsed) = p1 {
+        check!(parsed.is_absolute, "recognized absolute path");
+    }
+
+    let p2 = path::parse_path(b"foo/bar");
+    check!(p2.is_ok(), "parse relative path");
+    if let Ok(parsed) = p2 {
+        check!(!parsed.is_absolute, "recognized relative path");
+    }
+
+    let p3 = path::parse_path(b"");
+    check!(p3.is_err(), "reject empty path");
+
+    true
+}
+
+/// 2) inode 元数据与权限
+fn selftest_inode_metadata() -> bool {
+    use crate::fs::inode::{UserId, PermissionType, check_permission};
+
+    // 创建 inode 元数据
+    let meta = InodeMetadata {
+        inode_number: 42,
+        file_type: FileType::File,
+        size: 1024,
+        blocks: 2,
+        mode: vfs::FileMode(0o644),
+        uid: 1000,
+        gid: 1000,
+        nlink: 1,
+        atime: 0,
+        mtime: 0,
+        ctime: 0,
+        btime: None,
+    };
+
+    check!(meta.inode_number == 42, "inode number");
+    check!(meta.size == 1024, "inode size");
+    check!(meta.mode.0 == 0o644, "inode mode");
+    check!(meta.file_type == FileType::File, "inode type");
+
+    // 权限检查：所有者可读写
+    let owner = UserId { uid: 1000 };
+    check!(check_permission(&meta, owner, PermissionType::Read), "owner can read");
+    check!(check_permission(&meta, owner, PermissionType::Write), "owner can write");
+
+    // root 用户拥有所有权限
+    let root = UserId::root();
+    check!(check_permission(&meta, root, PermissionType::Read), "root can read");
+    check!(check_permission(&meta, root, PermissionType::Write), "root can write");
+
+    true
+}
+
+/// 3) dentry 结构与链接
+fn selftest_dentry_structure() -> bool {
+    // 创建 root dentry
+    let d1 = Dentry::new(0, 0, b"root");
+    check!(d1.is_ok(), "create root dentry");
+
+    if let Ok(d1) = d1 {
+        check!(d1.inode_number == 0, "root dentry inode is 0");
+        check!(d1.parent_ino == 0, "root parent is 0");
+        check!(d1.name_len == 4, "root name length");
+    }
+
+    // 创建子 dentry
+    let d2 = Dentry::new(0, 1, b"etc");
+    check!(d2.is_ok(), "create child dentry");
+
+    if let Ok(d2) = d2 {
+        check!(d2.parent_ino == 0, "child parent is root");
+        check!(d2.inode_number == 1, "child inode is 1");
+        check!(d2.name_len == 3, "child name length");
+    }
+
+    true
+}
+
+/// 4) dentry 缓存操作
+fn selftest_dcache_operations() -> bool {
+    let mut cache = DentryCache::new(256);
+
+    // 创建并缓存 dentry
+    let d = Dentry::new(0, 42, b"testfile").expect("create testfile dentry");
+    let key = dentry::DentryKey::new(0, b"testfile");
+    cache.insert(key, alloc::boxed::Box::new(d.clone()));
+
+    // 查询缓存
+    if let Some(cached) = cache.get(&key) {
+        check!(cached.inode_number == 42, "dentry cache lookup");
+        check!(cached.name_len == 8, "cached name length");
+    } else {
+        return false;
+    }
+
+    // 缓存应非空
+    check!(cache.len() > 0, "cache has entries");
+    check!(cache.capacity() >= 256, "cache capacity");
+
+    true
+}
+
+/// 5) page cache 基础
+fn selftest_pagecache_basics() -> bool {
+    // 轻量级验证：只检查 PageCacheStats 创建
+    let stats = pagecache::PageCacheStats::new();
+    check!(stats.hits == 0, "stats initially zero hits");
+    check!(stats.misses == 0, "stats initially zero misses");
+    check!(stats.writes == 0, "stats initially zero writes");
+
+    true
+}
+
+/// 6) 挂载表管理
+fn selftest_mount_table() -> bool {
+    let table = MountTable::new();
+
+    // 初始状态：空表
+    let initial_count = table.len();
+    check!(initial_count == 0, "mount table initially empty");
+
+    // 表应有非零容量
+    let entries = table.entries();
+    check!(entries.is_empty(), "entries list initially empty");
+
+    true
+}
+
+/// 7) 文件描述符操作
+fn selftest_file_operations() -> bool {
+    let fdt = FileDescriptorTable::new();
+
+    // 初始状态：无打开文件
+    check!(fdt.count_open() == 0, "fd table initially empty");
+
+    true
 }
