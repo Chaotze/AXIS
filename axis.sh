@@ -128,7 +128,7 @@ run() {
         qemu-system-x86_64
         -cpu max
         -drive format=raw,file=target/axis-0.2.0-bios-x86_64.img
-        -display curses
+        -nographic
         -m 128M -no-reboot -no-shutdown
     )
     qemu_cmd="${qemu_args[*]}"

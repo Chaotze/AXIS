@@ -341,6 +341,10 @@ pub fn init_with_regions(regions: &[MemoryRegion]) -> KernelResult<()> {
     if zones_total == 0 {
         return Err(KernelError::InvalidArgument);
     }
+    for i in 0..zones_total {
+        println!("[PMM] zone[{}]: ty={:?} start_pfn={} end_pfn={} pages={}",
+            i, zd[i][0], zd[i][1], zd[i][2], zd[i][2] - zd[i][1]);
+    }
 
     // 3) 从区域顶向下划分元数据字节区
     //    cursor 始终指向“下一个可用低地址”

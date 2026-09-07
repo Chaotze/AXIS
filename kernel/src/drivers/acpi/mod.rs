@@ -421,7 +421,7 @@ pub fn selftest() -> bool {
     if let Some(m) = &info.mcfg {
         all &= t("MCFG allocations", !m.allocations.is_empty());
     } else {
-        println!("    [SKIP] MCFG not present (PCIe 平台才提供)");
+        println!("    [SKIP] MCFG not present (only available on PCIe platforms)");
     }
 
     all

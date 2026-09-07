@@ -31,40 +31,42 @@ static LOOPBACK_NIC: crate::sync::Spinlock<Option<LoopbackNic>> =
 /// 发送帧（通过全局网卡）
 pub fn send_frame(frame: &[u8]) -> KernelResult<usize> {
     let mut nic_guard = LOOPBACK_NIC.lock();
-    if let Some(ref mut nic) = *nic_guard {
-        nic.send(frame)?;
-        Ok(frame.len())
-    } else {
-        Err(crate::prelude::KernelError::NotFound)
+    match *nic_guard {
+        Some(ref mut nic) => {
+            nic.send(frame)?;
+            Ok(frame.len())
+        }
+        None => Err(crate::prelude::KernelError::NotFound),
     }
 }
 
 /// 接收帧（通过全局网卡）
 pub fn recv_frame() -> KernelResult<Vec<u8>> {
+    // 预先分配缓冲区避免在锁内进行堆操作
+    let mut buf = Vec::new();
+    buf.resize(1500, 0);
+
     let mut nic_guard = LOOPBACK_NIC.lock();
-    if let Some(ref mut nic) = *nic_guard {
-        let mut buf = Vec::with_capacity(1500);
-        // 初始化缓冲区
-        buf.resize(1500, 0);
-        match nic.recv(&mut buf) {
-            Ok(n) => {
-                buf.truncate(n);
-                Ok(buf)
+    match *nic_guard {
+        Some(ref mut nic) => {
+            match nic.recv(&mut buf) {
+                Ok(n) => {
+                    buf.truncate(n);
+                    Ok(buf)
+                }
+                Err(e) => Err(e),
             }
-            Err(e) => Err(e),
         }
-    } else {
-        Err(crate::prelude::KernelError::NotFound)
+        None => Err(crate::prelude::KernelError::NotFound),
     }
 }
 
 /// 获取本机 MAC 地址
 pub fn get_mac_address() -> [u8; 6] {
     let nic_guard = LOOPBACK_NIC.lock();
-    if let Some(ref nic) = *nic_guard {
-        nic.mac().0
-    } else {
-        [0; 6]
+    match *nic_guard {
+        Some(ref nic) => nic.mac().0,
+        None => [0; 6],
     }
 }
 
@@ -79,9 +81,13 @@ pub fn init() -> KernelResult<()> {
     igc::probe()?;
     virtio::probe()?;
 
+    // 在锁外创建回环网卡实例（避免在持有锁时进行堆分配）
+    let loopback = LoopbackNic::new();
+
     // 初始化全局回环网卡实例
     let mut loopback_guard = LOOPBACK_NIC.lock();
-    *loopback_guard = Some(LoopbackNic::new());
+    *loopback_guard = Some(loopback);
+    drop(loopback_guard);
 
     // 注册回环网卡信息（协议栈的基础设施）
     driver::register_nic(driver::NicInfo {

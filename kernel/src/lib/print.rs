@@ -56,7 +56,7 @@ pub fn _print(args: fmt::Arguments) {
     // 这里改调驱动接口，避免端口访问重复实现。fire-and-forget：QEMU 的
     // 16550 发送保持寄存器几乎总是空闲，轮询几乎不等待。
     for &b in &buf[..len] {
-        crate::drivers::serial::console_write_byte(if b == b'\n' { b'\r' } else { b });
+        crate::drivers::serial::console_write_byte(b);
     }
 }
 

@@ -60,9 +60,15 @@ pub trait PageProvider: Send {
 }
 
 /// slab 页头：常驻于每一页的开头（共置元数据）
+///
+/// 字段顺序和大小必须精确控制以避免对齐问题：
+/// - 前 24 字节：6 个 u32（每个 4 字节）
+/// - 接下来 7 字节：poison (1) + _pad (6)
+/// - 最后 16 字节：2 个 usize（各 8 字节，8 字节对齐）
+/// 总计：48 字节
 #[repr(C)]
 struct SlabPageHeader {
-    /// 魔数（SLAB_MAGIC）
+    /// 魔数（SLAB_MAGIC）= 0x534C4142
     magic: u32,
     /// 所属缓存 id（kfree 通过它找到缓存）
     cache_id: u32,
@@ -75,14 +81,14 @@ struct SlabPageHeader {
     free: u32,
     /// 空闲链表头（对象下标）
     next_free: u32,
+    /// 是否启用毒药（调试用）
+    poison: u8,
+    /// 填充字节（确保 prev_slab 在 8 字节边界）
+    _pad: [u8; 6],
     /// 双向链表：同缓存 slab 链表前驱（页基址，0 = 无）
     prev_slab: usize,
     /// 双向链表：同缓存 slab 链表后继
     next_slab: usize,
-    /// 是否启用毒药（调试用）
-    poison: u8,
-    /// 填充字节（保证页头大小为 8 的倍数，便于步长对齐取整）
-    _pad: [u8; 3],
 }
 
 impl SlabPageHeader {
@@ -180,12 +186,15 @@ impl SlabCache {
         self.page_size = page_size;
         self.objects_offset = objects_offset;
         self.objs_per_slab = objs_per_slab;
+        // 清洁初始化：重置所有链表和状态
+        // 这很重要，因为如果缓存被重新初始化，旧状态必须清除
         self.partial = 0;
         self.full = 0;
         self.slabs = 0;
         self.objs_allocated = 0;
         self.poison = cfg!(debug_assertions);
         self.valid = true;
+        // 不重置统计计数，保留历史数据
     }
 
     /// 缓存是否就绪
@@ -304,6 +313,13 @@ impl SlabCache {
             return core::ptr::null_mut();
         }
 
+        // 验证缓存参数的合理性
+        if self.stride == 0 || self.stride > self.page_size {
+            println!("[SLAB-FATAL] cache_id={} corrupted: stride={}, page_size={}",
+                     self.id, self.stride, self.page_size);
+            return core::ptr::null_mut();
+        }
+
         // 没有部分空闲页则取新页
         if self.partial == 0 {
             let Some(page) = provider.alloc_page() else {
@@ -315,13 +331,52 @@ impl SlabCache {
         }
 
         let page = self.partial;
+        // 验证页地址的合理性
+        debug_assert!(page & (self.page_size - 1) == 0, "页基址必须对齐: 0x{:x}", page);
+        debug_assert!(page < 0xFFFF_9000_0000_0000, "页地址超出预期范围: 0x{:x}", page);
+
         let header = unsafe { &mut *SlabPageHeader::at(page) };
-        debug_assert_eq!(header.magic, SLAB_MAGIC);
-        debug_assert!(header.free > 0, "partial 链上的页必然还有空闲对象");
+
+        // 如果页头魔数不匹配，说明这是一个损坏的页
+        if header.magic != SLAB_MAGIC {
+            if header.magic != 0 {
+                // 页头有内容但魔数不对，说明布局可能变了
+                println!("[SLAB-WARN] cache_id={} found stale page with magic 0x{:x}, discarding",
+                         self.id, header.magic);
+                // 直接从 partial 链清除这个页，重置 partial 指针
+                self.partial = 0;
+                // 释放这个页
+                provider.free_page(page);
+                self.slabs = self.slabs.saturating_sub(1);
+                // 递归重试
+                return self.alloc(provider);
+            }
+            // 未初始化的页（魔数为 0），正常初始化
+            unsafe { self.init_slab(page) };
+            // 重新读取头部以获取初始化后的值
+            let header = unsafe { &mut *SlabPageHeader::at(page) };
+            debug_assert_eq!(header.magic, SLAB_MAGIC);
+        } else {
+            // 魔数正确，验证其他字段
+            debug_assert!(header.free > 0, "partial 链上的页必然还有空闲对象");
+        }
 
         // 弹出空闲链头对象
         let slot = header.next_free as usize;
+        if slot >= self.objs_per_slab {
+            println!("[SLAB-FATAL] cache_id={} corrupted slot: {} >= objs_per_slab: {}, stride={}, objects_offset={}",
+                     self.id, slot, self.objs_per_slab, self.stride, self.objects_offset);
+            println!("  page=0x{:x}, header.magic=0x{:x}, header.free={}, header.count={}",
+                     page, header.magic, header.free, header.count);
+            return core::ptr::null_mut();
+        }
         let obj = page + self.objects_offset + slot * self.stride;
+        if obj >= page + self.page_size {
+            println!("[SLAB-FATAL] cache_id={} obj address out of page: 0x{:x} >= 0x{:x}",
+                     self.id, obj, page + self.page_size);
+            return core::ptr::null_mut();
+        }
+
         let next = unsafe { core::ptr::read(obj as *const u32) };
         header.next_free = next;
         header.free -= 1;
@@ -334,6 +389,14 @@ impl SlabCache {
 
         self.objs_allocated += 1;
         self.total_allocs += 1;
+
+        let page_base = page & !(self.page_size - 1);
+        if obj < page || obj >= page + self.page_size {
+            println!("[SLAB-WARN] alloc_object: id={} obj=0x{:x} page=0x{:x} page_base=0x{:x} offset={}",
+                     self.id, obj, page, page_base, obj.wrapping_sub(page));
+        }
+        // println!("[SLAB] alloc_object: id={} addr=0x{:x} page=0x{:x}",
+        //          self.id, obj, page);
         obj as *mut u8
     }
 

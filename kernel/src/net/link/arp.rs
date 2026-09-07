@@ -401,8 +401,8 @@ pub fn selftest() -> bool {
     let parsed_request = parse_arp_frame(&request).unwrap_or_else(|_| {
         panic!("ARP 请求解析失败");
     });
-    assert_eq!(parsed_request.sender_ip(), sender_ip, "发送者 IP 不匹配");
-    assert_eq!(parsed_request.target_ip(), target_ip, "目标 IP 不匹配");
+    assert_eq!(parsed_request.sender_ip(), sender_ip, "sender IP does not match");
+    assert_eq!(parsed_request.target_ip(), target_ip, "target IP does not match");
 
     true
 }

@@ -72,9 +72,9 @@ pub fn init() {
     // 禁用中断，避免中断路径与初始化路径死锁
     let flags = crate::arch::x86_64::cpu::irq_save();
 
-    // 初始化网络驱动（虚拟 NIC）
-    if let Err(e) = crate::drivers::nic::init_network_device() {
-        println!("[NET] Warning: Failed to initialize network device: {:?}", e);
+    // 初始化网络驱动（NIC 子系统）
+    if let Err(e) = crate::drivers::nic::init() {
+        println!("[NET] Warning: Failed to initialize NIC subsystem: {:?}", e);
     }
 
     // 初始化网络接口配置
